@@ -4,15 +4,52 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import unicodedata
 from difflib import SequenceMatcher
+from pathlib import Path
 
 from people_comma_finder import ImmichApiError, api_request
 
 
 DEFAULT_THRESHOLD = 0.8
+MERGE_PROMPT_THRESHOLD = 0.9
+
+
+def merge_history_path() -> Path:
+    state_home = Path(
+        os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    )
+    return state_home / "immich-library-tools" / "people_similar_name_merges.json"
+
+
+def load_merged_person_ids(path: Path) -> set[str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return set()
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Could not read merge history at {path}: {error}") from error
+
+    if not isinstance(data, dict) or not isinstance(data.get("merged_person_ids"), list):
+        raise RuntimeError(f"Merge history at {path} has an unexpected format")
+    return {
+        person_id
+        for person_id in data["merged_person_ids"]
+        if isinstance(person_id, str)
+    }
+
+
+def save_merged_person_ids(path: Path, person_ids: set[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    temporary_path.write_text(
+        json.dumps({"merged_person_ids": sorted(person_ids)}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary_path.replace(path)
 
 
 def normalized_name(name: str) -> str:
@@ -54,6 +91,39 @@ def find_similar_people(
     return sorted(matches, key=lambda match: (-match[1], match[0]["name"].casefold()))
 
 
+def high_confidence_pairs(
+    results: list[tuple[dict, list[tuple[dict, float]]]],
+) -> list[tuple[dict, dict, float]]:
+    pairs: dict[tuple[str, str], tuple[dict, dict, float]] = {}
+    for person, matches in results:
+        person_id = person.get("id")
+        if not isinstance(person_id, str):
+            continue
+        for other, score in matches:
+            other_id = other.get("id")
+            if score <= MERGE_PROMPT_THRESHOLD or not isinstance(other_id, str):
+                continue
+            if person_id == other_id:
+                continue
+
+            key = tuple(sorted((person_id, other_id)))
+            if key in pairs:
+                continue
+            keeper, source = sorted(
+                (person, other),
+                key=lambda candidate: (
+                    candidate["name"].casefold(),
+                    str(candidate.get("id", "")),
+                ),
+            )
+            pairs[key] = (keeper, source, score)
+
+    return sorted(
+        pairs.values(),
+        key=lambda pair: (-pair[2], pair[0]["name"].casefold(), pair[1]["name"].casefold()),
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="List all Immich people and other names with high similarity scores."
@@ -65,6 +135,11 @@ def parse_args() -> argparse.Namespace:
         metavar="0..1",
         help="minimum name similarity score (default: 0.8, or 80%%)",
     )
+    parser.add_argument(
+        "--only-matches",
+        action="store_true",
+        help="hide people who have no names at or above the similarity threshold",
+    )
     args = parser.parse_args()
     if not 0 <= args.threshold <= 1:
         parser.error("--threshold must be between 0 and 1")
@@ -73,6 +148,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    history_path = merge_history_path()
+    try:
+        merged_person_ids = load_merged_person_ids(history_path)
+    except RuntimeError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+
     base_url = os.environ.get("IMMICH_BASE_URL", "").strip().rstrip("/")
     api_key = os.environ.get("IMMICH_API_KEY", "").strip()
     if not base_url or not api_key:
@@ -104,10 +186,22 @@ def main() -> int:
     ]
     people.sort(key=lambda person: person["name"].casefold())
 
-    print(f"Found {len(people)} people. Similarity threshold: {args.threshold:.0%}.")
-    for person in people:
+    results = [
+        (person, find_similar_people(person, people, args.threshold))
+        for person in people
+    ]
+    if args.only_matches:
+        results = [(person, matches) for person, matches in results if matches]
+
+    print(
+        f"Found {len(people)} people. Showing {len(results)}. "
+        f"Similarity threshold: {args.threshold:.0%}."
+    )
+    if args.only_matches and not results:
+        print("No people have similar names at this threshold.")
+
+    for person, matches in results:
         print(f"\n{person['name']} (id: {person.get('id', 'unknown')})")
-        matches = find_similar_people(person, people, args.threshold)
         if not matches:
             print("\tNo similar names found.")
             continue
@@ -117,6 +211,84 @@ def main() -> int:
             print(
                 f"\t- {other['name']} (id: {other.get('id', 'unknown')}; "
                 f"similarity: {score:.1%})"
+            )
+
+    active_ids = {person.get("id") for person in people}
+    for keeper, source, score in high_confidence_pairs(results):
+        keeper_id = keeper["id"]
+        source_id = source["id"]
+        if keeper_id not in active_ids or source_id not in active_ids:
+            continue
+        previously_merged_ids = {keeper_id, source_id} & merged_person_ids
+        if previously_merged_ids:
+            merged_names = [
+                person["name"]
+                for person in (keeper, source)
+                if person["id"] in previously_merged_ids
+            ]
+            print(
+                f"\nSkipping merge prompt for {', '.join(merged_names)}; "
+                "this script recorded a previous merge for this person."
+            )
+            continue
+
+        print(
+            f"\nHigh-confidence possible duplicate ({score:.1%} similarity):"
+            f"\n\tKeep: {keeper['name']} (id: {keeper_id})"
+            f"\n\tMerge into it: {source['name']} (id: {source_id})"
+        )
+        while True:
+            try:
+                answer = input("\tMerge these people? [y/N] ").strip().casefold()
+            except EOFError:
+                answer = "n"
+            if answer in {"y", "yes"}:
+                break
+            if answer in {"", "n", "no"}:
+                print("\tSkipped; moving to the next possible duplicate.")
+                break
+            print("\tPlease answer yes or no.")
+
+        if answer not in {"y", "yes"}:
+            continue
+
+        try:
+            merge_result = api_request(
+                base_url,
+                api_key,
+                "/people/merge",
+                {"ids": [keeper_id, source_id]},
+            )
+        except ImmichApiError as error:
+            print(f"\tMerge failed: {error}", file=sys.stderr)
+            continue
+
+        source_result = None
+        if isinstance(merge_result, list):
+            source_result = next(
+                (
+                    result
+                    for result in merge_result
+                    if isinstance(result, dict) and result.get("id") == source_id
+                ),
+                None,
+            )
+        if source_result and source_result.get("success") is True:
+            print(f"\tMerged {source['name']} into {keeper['name']}.")
+            active_ids.remove(source_id)
+            merged_person_ids.update({keeper_id, source_id})
+            try:
+                save_merged_person_ids(history_path, merged_person_ids)
+            except OSError as error:
+                print(
+                    f"\tWarning: merge succeeded, but history could not be saved "
+                    f"to {history_path}: {error}",
+                    file=sys.stderr,
+                )
+        else:
+            print(
+                f"\tMerge was not confirmed as successful: {merge_result}",
+                file=sys.stderr,
             )
 
     return 0

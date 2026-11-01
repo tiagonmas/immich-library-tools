@@ -87,7 +87,13 @@ python3 people_similar_name_finder.py
 This lists every person and possible duplicate names with a similarity score of
 80% or higher. People without matches are listed too. Use `--threshold` to
 change the cutoff; for example, `--threshold 0.9` shows only matches at 90% or
-higher. Similarity scores are name comparisons, not calibrated probabilities.
+higher. Add `--only-matches` to hide people with no similar names. Similarity
+scores are name comparisons, not calibrated probabilities. For each distinct
+pair scoring above 90%, the script asks whether to merge; confirming keeps the
+alphabetically first person's record and merges the other person into it. IDs
+involved in a confirmed merge are saved in
+`~/.local/state/immich-library-tools/people_similar_name_merges.json` (or under
+`$XDG_STATE_HOME`) so the script won't ask about them again on later runs.
 
 ### Videos without people tags
 <img width="882" height="591" alt="image" src="https://github.com/user-attachments/assets/128db1e0-9deb-4626-8e47-1226f6fc84ae" />
