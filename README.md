@@ -90,6 +90,7 @@ change the cutoff; for example, `--threshold 0.9` shows only matches at 90% or
 higher. Similarity scores are name comparisons, not calibrated probabilities.
 
 ### Videos without people tags
+<img width="882" height="591" alt="image" src="https://github.com/user-attachments/assets/128db1e0-9deb-4626-8e47-1226f6fc84ae" />
 
 List matching videos in the terminal:
 
