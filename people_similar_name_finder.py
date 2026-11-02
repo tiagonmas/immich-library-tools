@@ -18,6 +18,33 @@ DEFAULT_THRESHOLD = 0.8
 MERGE_PROMPT_THRESHOLD = 0.9
 
 
+def format_similarity(score: float, *, color: bool) -> str:
+    """Format a similarity percentage with a red-yellow-green terminal scale."""
+    percentage = score * 100
+    if not color:
+        return f"{percentage:.1f}%"
+
+    red = (255, 0, 0)
+    yellow = (255, 255, 0)
+    green = (0, 180, 0)
+    if percentage <= 80:
+        rgb = red
+    elif percentage <= 90:
+        amount = (percentage - 80) / 10
+        rgb = tuple(
+            round(start + (end - start) * amount)
+            for start, end in zip(red, yellow)
+        )
+    else:
+        amount = min((percentage - 90) / 10, 1)
+        rgb = tuple(
+            round(start + (end - start) * amount)
+            for start, end in zip(yellow, green)
+        )
+
+    return f"\033[38;2;{rgb[0]};{rgb[1]};{rgb[2]}m{percentage:.1f}%\033[0m"
+
+
 def merge_history_path() -> Path:
     state_home = Path(
         os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
@@ -131,9 +158,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--threshold",
         type=float,
-        default=DEFAULT_THRESHOLD,
         metavar="0..1",
         help="minimum name similarity score (default: 0.8, or 80%%)",
+    )
+    parser.add_argument(
+        "--min-similarity",
+        type=float,
+        metavar="PERCENT",
+        help=(
+            "show only people with at least one match at or above this percentage "
+            "(0..100; for example, 90)"
+        ),
     )
     parser.add_argument(
         "--only-matches",
@@ -141,13 +176,16 @@ def parse_args() -> argparse.Namespace:
         help="hide people who have no names at or above the similarity threshold",
     )
     args = parser.parse_args()
-    if not 0 <= args.threshold <= 1:
+    if args.threshold is not None and not 0 <= args.threshold <= 1:
         parser.error("--threshold must be between 0 and 1")
+    if args.min_similarity is not None and not 0 <= args.min_similarity <= 100:
+        parser.error("--min-similarity must be between 0 and 100")
     return args
 
 
 def main() -> int:
     args = parse_args()
+    use_color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
     history_path = merge_history_path()
     try:
         merged_person_ids = load_merged_person_ids(history_path)
@@ -182,18 +220,28 @@ def main() -> int:
     ]
     people.sort(key=lambda person: person["name"].casefold())
 
+    min_score = (
+        0.0
+        if args.min_similarity is not None
+        else (args.threshold if args.threshold is not None else DEFAULT_THRESHOLD)
+    )
+    if args.threshold is not None:
+        min_score = max(min_score, args.threshold)
+    if args.min_similarity is not None:
+        min_score = max(min_score, args.min_similarity / 100)
+
     results = [
-        (person, find_similar_people(person, people, args.threshold))
+        (person, find_similar_people(person, people, min_score))
         for person in people
     ]
-    if args.only_matches:
+    if args.only_matches or args.min_similarity is not None:
         results = [(person, matches) for person, matches in results if matches]
 
     print(
         f"Found {len(people)} people. Showing {len(results)}. "
-        f"Similarity threshold: {args.threshold:.0%}."
+        f"Similarity threshold: {min_score:.0%}."
     )
-    if args.only_matches and not results:
+    if (args.only_matches or args.min_similarity is not None) and not results:
         print("No people have similar names at this threshold.")
 
     for person, matches in results:
@@ -204,9 +252,10 @@ def main() -> int:
 
         print("\tPossible duplicates:")
         for other, score in matches:
+            similarity = format_similarity(score, color=use_color)
             print(
                 f"\t- {other['name']} (id: {other.get('id', 'unknown')}; "
-                f"similarity: {score:.1%})"
+                f"similarity: {similarity})"
             )
 
     active_ids = {person.get("id") for person in people}
@@ -228,8 +277,9 @@ def main() -> int:
             )
             continue
 
+        similarity = format_similarity(score, color=use_color)
         print(
-            f"\nHigh-confidence possible duplicate ({score:.1%} similarity):"
+            f"\nHigh-confidence possible duplicate ({similarity} similarity):"
             f"\n\tKeep: {keeper['name']} (id: {keeper_id})"
             f"\n\tMerge into it: {source['name']} (id: {source_id})"
         )

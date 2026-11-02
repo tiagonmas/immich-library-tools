@@ -11,14 +11,14 @@ below.
 | `people_comma_finder.py` | Finds people whose names contain a comma, lists their associated images, reports the people tagged in each image, and checks whether each comma-separated name is also tagged. By default it previews removing the comma-named person's face from images. |
 | `people_comma_list.py` | Lists people whose names contain a comma, with their IDs. It does not search images. |
 | `people_dot_finder.py` | Finds people whose names contain a period, shows exact or likely similar names (80% similarity or higher), recommends the top match, and prompts before merging. A confirmed merge keeps the recommended person's record. |
-| `people_similar_name_finder.py` | Lists every person and names with a high similarity score as possible duplicates. It only reports matches and does not change Immich data. |
+| `people_similar_name_finder.py` | Lists people and possible duplicate names. For pairs scoring above 90%, it asks whether to merge; a merge happens only after an affirmative answer. |
 | `videos_without_people.py` | Lists videos with no people tagged, including a link to open each video in Immich. |
 | `videos_without_people_web.py` | Runs a paginated web page with a thumbnail grid, hover video previews, durations, duration sorting (shortest first by default), and total count for videos that have no people tagged. It shows a loading indicator while counting. Each video link opens in a new tab. |
 
 The comma finder can modify Immich data when run with `--no-dry-run`; it removes
 the comma-named person's detected face entries from associated images. The dot
-finder can merge people after you confirm each suggested merge. The other
-scripts only read data.
+finder and similar-name finder can merge people after you confirm a suggested
+merge. The remaining scripts only read data.
 
 ## Setup
 
@@ -39,8 +39,32 @@ People-listing tools fetch every page from Immich, including hidden people.
 
 ### People with commas
 
+Use these examples for common tasks such as listing comma-named people,
+reviewing a small number of images, or previewing changes:
+
 ```sh
-python3 people_comma_finder.py
+# List comma-named people and their IDs; do not inspect images.
+python3 people_comma_finder.py --list-people
+
+# Include a known person by ID if regular discovery missed it.
+python3 people_comma_finder.py --list-people --include-person-id 5e5cc059-2027-452b-a90f-f662f3a53ad2
+
+# Inspect one image. Dry-run is the default.
+python3 people_comma_finder.py --top 1
+
+# Inspect up to 10 images where all individual names are tagged.
+python3 people_comma_finder.py --top 10 --tag-status yes
+
+# Preview images where one or more individual names are missing.
+python3 people_comma_finder.py --tag-status no
+
+# Apply changes to the first two eligible images, asking before each change.
+python3 people_comma_finder.py --top 2 --no-dry-run --confirm
+
+# Apply changes without prompts.
+python3 people_comma_finder.py --no-dry-run --no-confirm
+
+# Use the separate read-only comma-name listing script.
 python3 people_comma_list.py
 ```
 
@@ -64,24 +88,37 @@ Options for `people_comma_finder.py`:
 | `--include-person-id ID` | With `--list-people`, also fetch a known person by ID if Immich omits it from `/people`. Repeat for multiple IDs. |
 | `--hide-people` | With `--list-people`, hide comma-named people with zero associated assets. Respects dry-run and confirmation settings. |
 | `--delete-people` | With `--list-people`, delete all identified comma-named people and unassign their faces. Cannot be combined with `--hide-people`. Respects dry-run and confirmation settings. |
-| `--tag-status yes\|no\|all` | Show images where all individual names are tagged (`yes`), where one or more are missing (`no`), or both (`all`, default). This also limits which images are eligible for removal in live mode. |
+| `--tag-status yes\|no\|all` | Show images where all individual names are tagged (`yes`), where one or more are missing (`no`), or both (`all`, default). In live mode, comma-person face entries are removed from selected images whether or not every individual name is tagged. |
 | `--dry-run` / `--no-dry-run` | Preview changes without updating Immich (default), or apply changes. |
 | `--confirm` / `--no-confirm` | Ask before each image or person change (default), or apply live changes without prompts. Confirmation only applies with `--no-dry-run`. |
 
 To apply hides or deletes, use `--no-dry-run`; the default dry-run mode only
-reports the planned changes. With the default confirmation setting, the script
-asks before each eligible person change. Deleting removes each person record
-and unassigns its faces, while leaving the assets in Immich.
-
-Examples:
+reports planned changes. With the default confirmation setting, the script
+asks before each eligible person change. Hiding is limited to people with zero
+associated assets. Deleting removes the selected person record and unassigns its
+faces, while leaving the assets in Immich. Review the output in dry-run mode
+before using the delete option.
 
 ```sh
-python3 people_comma_finder.py --top 10
-python3 people_comma_finder.py --tag-status no --top 100
-python3 people_comma_finder.py --top 2 --no-dry-run --confirm
+# Preview hiding comma-named people that have zero associated assets.
+python3 people_comma_finder.py --list-people --hide-people
+
+# Hide those zero-asset people, asking before each person.
 python3 people_comma_finder.py --list-people --hide-people --no-dry-run
-python3 people_comma_finder.py --list-people --delete-people --no-dry-run
+
+# Hide them without a prompt for each person.
+python3 people_comma_finder.py --list-people --hide-people --no-dry-run --no-confirm
+
+# Preview deleting all identified comma-named people.
+python3 people_comma_finder.py --list-people --delete-people
+
+# Delete them without asking for confirmation for each person.
+python3 people_comma_finder.py --list-people --delete-people --no-dry-run --no-confirm
 ```
+
+`--hide-people` and `--delete-people` require `--list-people` and cannot be
+combined. `--include-person-id ID` can be repeated for multiple known IDs. Use
+`python3 people_comma_finder.py --help` to see the full command usage.
 
 ### People with periods
 
@@ -90,9 +127,15 @@ python3 people_dot_finder.py
 ```
 
 For each dotted name, the script lists exact matches after removing periods and
-similar names ranked by similarity. It recommends the highest-ranked option
-and asks whether to merge the dotted person into it. Enter `y` or `yes` to
-confirm; any other response skips the merge. Merging changes Immich data.
+similar names ranked by similarity (80% or higher). It recommends the
+highest-ranked option and asks whether to merge the dotted person into it. Enter
+`y` or `yes` to confirm; any other response skips the merge. Merging changes
+Immich data. This script has no command-line options.
+
+```sh
+# Review dotted names and possible duplicates; answer No or press Enter to skip a merge.
+python3 people_dot_finder.py
+```
 
 ### Similar people names
 
@@ -102,14 +145,41 @@ python3 people_similar_name_finder.py
 
 This lists every person and possible duplicate names with a similarity score of
 80% or higher. People without matches are listed too. Use `--threshold` to
-change the cutoff; for example, `--threshold 0.9` shows only matches at 90% or
-higher. Add `--only-matches` to hide people with no similar names. Similarity
-scores are name comparisons, not calibrated probabilities. For each distinct
-pair scoring above 90%, the script asks whether to merge; confirming keeps the
+change the cutoff using a fraction from 0 to 1. Use `--min-similarity` with a
+percentage from 0 to 100 to show only people with at least one match at or
+above that score; for example, `--min-similarity 90` shows people with a match
+of 90% or higher and implies `--only-matches`. Add `--only-matches` by itself
+to hide people without matches at the regular `--threshold`. Similarity scores
+are name comparisons, not calibrated probabilities. For each distinct pair
+scoring above 90%, the script asks whether to merge; confirming keeps the
 alphabetically first person's record and merges the other person into it. IDs
 involved in a confirmed merge are saved in
 `~/.local/state/immich-library-tools/people_similar_name_merges.json` (or under
 `$XDG_STATE_HOME`) so the script won't ask about them again on later runs.
+
+To use it as a review-only pass, answer `n` or press Enter at each merge prompt.
+There is no option to disable the prompts. Options for
+`people_similar_name_finder.py`:
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `--threshold 0..1` | `0.8` | Minimum name similarity to report (for example, `0.9` is 90%). |
+| `--min-similarity PERCENT` | None | Show only people with at least one match at or above this percentage (0–100); implies `--only-matches`. For example, `90` means 90% or higher. |
+| `--only-matches` | Off | Hide people who have no names meeting the threshold. |
+
+```sh
+# List everyone and possible matches, including people with no matches.
+python3 people_similar_name_finder.py
+
+# Show only matches at 90% similarity or higher.
+python3 people_similar_name_finder.py --only-matches --min-similarity 90
+
+# Use an 85% cutoff; answer No at any merge prompt to continue without changes.
+python3 people_similar_name_finder.py --threshold 0.85
+```
+
+The dot and similar-name tools continue to the next person after a declined
+merge. Similarity scores are name comparisons, not calibrated probabilities.
 
 ### Videos without people tags
 <img width="882" height="591" alt="image" src="https://github.com/user-attachments/assets/128db1e0-9deb-4626-8e47-1226f6fc84ae" />
@@ -119,6 +189,9 @@ List matching videos in the terminal:
 ```sh
 python3 videos_without_people.py
 ```
+
+The terminal script has no command-line options. It prints the total, each
+matching video's filename, and its Immich link.
 
 Start the paginated web view:
 
@@ -132,6 +205,13 @@ network, bind to all interfaces and browse to the computer's LAN address:
 
 ```sh
 python3 videos_without_people_web.py --host 0.0.0.0
+```
+
+For example, serve 50 videos per page and filter to videos between one and ten
+minutes long:
+
+```sh
+python3 videos_without_people_web.py --host 0.0.0.0 --port 8765 --page-size 50 --min-duration 1:00 --max-duration 10:00
 ```
 
 Duration filters are optional. For example, to show videos between 30 seconds
@@ -158,5 +238,20 @@ Options:
 Durations accept seconds (such as `30`), `MM:SS` (such as `5:00`), or
 `HH:MM:SS` (such as `1:05:00`). Bounds are inclusive. When either duration
 filter is set, videos with unknown durations are excluded.
+
+The page sorts by duration, shortest first by default. Sorting is controlled in
+the page and has no command-line option. Web server options:
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `--host HOST` | `127.0.0.1` | Address to bind to. Use `0.0.0.0` for access from other devices on the LAN. |
+| `--port PORT` | `8765` | Web server port (1–65535). |
+| `--page-size N` | `20` | Videos per page (1–100). |
+| `--min-duration DURATION` | None | Include videos at least this long. |
+| `--max-duration DURATION` | None | Include videos no longer than this. |
+
+To connect from another device, start with `--host 0.0.0.0` and browse to
+`http://<computer-LAN-address>:8765/`. Without `--host`, the server is only
+reachable from the computer running it.
 
 Press Ctrl+C in the terminal to stop the server.
