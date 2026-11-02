@@ -8,7 +8,7 @@ import sys
 import unicodedata
 from difflib import SequenceMatcher
 
-from people_comma_finder import ImmichApiError, api_request
+from people_comma_finder import ImmichApiError, get_all_people
 
 SIMILARITY_THRESHOLD = 0.8
 
@@ -62,18 +62,11 @@ def main() -> int:
         base_url = base_url[:-4].rstrip("/")
 
     try:
-        response = api_request(base_url, api_key, "/people")
+        people = get_all_people(base_url, api_key)
     except ImmichApiError as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
 
-    if not isinstance(response, dict) or not isinstance(response.get("people"), list):
-        print("Error: unexpected response from /people; expected a people list.", file=sys.stderr)
-        return 1
-
-    people = [
-        person for person in response["people"] if isinstance(person, dict)
-    ]
     matching_people = [
         person
         for person in people

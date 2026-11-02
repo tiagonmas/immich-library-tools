@@ -55,17 +55,152 @@ def api_request(
         raise ImmichApiError(f"Immich returned invalid JSON for {path}") from error
 
 
-def get_comma_named_people(base_url: str, api_key: str) -> list[dict]:
-    response = api_request(base_url, api_key, "/people")
-    if not isinstance(response, dict) or not isinstance(response.get("people"), list):
-        raise ImmichApiError("Unexpected response from /people; expected an object with a people list")
+def get_all_people(base_url: str, api_key: str) -> list[dict]:
+    """Fetch every page from Immich's paginated people endpoint."""
+    people: list[dict] = []
+    known_ids: set[str] = set()
+    total_people: int | None = None
+    page = 1
+
+    while True:
+        query = urlencode({"page": page, "size": 1000, "withHidden": "true"})
+        response = api_request(base_url, api_key, f"/people?{query}")
+        if not isinstance(response, dict) or not isinstance(response.get("people"), list):
+            raise ImmichApiError(
+                "Unexpected response from /people; expected an object with a people list"
+            )
+
+        page_people = [person for person in response["people"] if isinstance(person, dict)]
+        previous_count = len(known_ids)
+        for person in page_people:
+            person_id = person.get("id")
+            if isinstance(person_id, str):
+                if person_id not in known_ids:
+                    known_ids.add(person_id)
+                    people.append(person)
+            else:
+                people.append(person)
+
+        response_total = response.get("total")
+        if isinstance(response_total, int):
+            total_people = response_total
+
+        has_next_page = response.get("hasNextPage")
+        if total_people is not None and len(known_ids) >= total_people:
+            break
+        if has_next_page is False:
+            # Some Immich versions report a total larger than the page size can
+            # return. Keep paging until that total is collected, when possible.
+            if total_people is None or len(known_ids) >= total_people:
+                break
+        elif has_next_page is not True and len(known_ids) == previous_count:
+            break
+
+        if len(known_ids) == previous_count:
+            expected = f" of {total_people}" if total_people is not None else ""
+            raise ImmichApiError(
+                f"Immich /people pagination stopped making progress on page {page}; "
+                f"received {len(known_ids)}{expected} people. The collection endpoint "
+                "is not returning all people; GET /people/{id} can still return an "
+                "individual record that is absent from this list."
+            )
+        page += 1
+
+    return people
+
+
+def get_comma_named_people(
+    base_url: str,
+    api_key: str,
+    include_person_ids: list[str] | None = None,
+) -> list[dict]:
+    """Find comma-named people through similar-name searches for every known name."""
+    seed_people = get_all_people(base_url, api_key)
+    people_by_id = {
+        person["id"]: person
+        for person in seed_people
+        if isinstance(person, dict)
+        and isinstance(person.get("id"), str)
+        and isinstance(person.get("name"), str)
+        and person["name"].strip()
+    }
+
+    for person_id in include_person_ids or []:
+        if person_id not in people_by_id:
+            person = api_request(base_url, api_key, f"/people/{quote(person_id, safe='')}")
+            if not isinstance(person, dict):
+                raise ImmichApiError(f"Unexpected response from /people/{person_id}")
+            if isinstance(person.get("name"), str) and person["name"].strip():
+                people_by_id[person_id] = person
+
+    seed_names = list(dict.fromkeys(person["name"].strip() for person in people_by_id.values()))
+    similar_people_by_id = dict(people_by_id)
+    print(f"Loaded {len(seed_names)} distinct named people; searching for similar names.", flush=True)
+
+    for index, name in enumerate(seed_names, start=1):
+        query = urlencode({"name": name, "withHidden": "true"})
+        response = api_request(base_url, api_key, f"/search/person?{query}")
+        if not isinstance(response, list):
+            raise ImmichApiError(
+                f"Unexpected response from /search/person for name {name!r}; expected a list"
+            )
+        for person in response:
+            if isinstance(person, dict) and isinstance(person.get("id"), str):
+                similar_people_by_id[person["id"]] = person
+
+        if index == 1 or index % 100 == 0 or index == len(seed_names):
+            print(f"Similar-name searches: {index}/{len(seed_names)}", flush=True)
+
     return [
         person
-        for person in response["people"]
+        for person in similar_people_by_id.values()
         if isinstance(person, dict)
         and isinstance(person.get("name"), str)
         and "," in person["name"]
     ]
+
+
+def get_person_asset_count(base_url: str, api_key: str, person_id: str) -> int:
+    response = api_request(
+        base_url,
+        api_key,
+        f"/people/{quote(person_id, safe='')}/statistics",
+    )
+    if not isinstance(response, dict) or not isinstance(response.get("assets"), int):
+        raise ImmichApiError(
+            f"Unexpected response from /people/{person_id}/statistics; expected an assets count"
+        )
+    return response["assets"]
+
+
+def hide_person(base_url: str, api_key: str, person_id: str) -> None:
+    api_request(
+        base_url,
+        api_key,
+        f"/people/{quote(person_id, safe='')}",
+        {"isHidden": True},
+        method="PUT",
+    )
+
+
+def delete_person(base_url: str, api_key: str, person_id: str) -> None:
+    api_request(
+        base_url,
+        api_key,
+        f"/people/{quote(person_id, safe='')}",
+        {},
+        method="DELETE",
+    )
+
+
+def format_person_summary(person: dict) -> str:
+    summary = (
+        f"{person['name']} (id: {person.get('id', 'unknown')}; "
+        f"assets: {person.get('assetCount', 0)})"
+    )
+    if person.get("assetCount", 0) > 0:
+        return f"\033[31m{summary}\033[0m"
+    return summary
 
 
 def get_person_images(
@@ -189,7 +324,7 @@ def check_person(
 
     expected_names = individual_names(name)
     expected_normalized = {normalized_name(value) for value in expected_names}
-    print(f"\nPerson: {name} (id: {person_id})")
+    print(f"\nPerson: {format_person_summary(person)}")
     print(f"\tIndividual names to find: {', '.join(expected_names)}")
 
     images = get_person_images(base_url, api_key, person_id, image_limit)
@@ -265,6 +400,23 @@ def parse_args() -> argparse.Namespace:
         help="list people with commas in their names and exit without searching images",
     )
     parser.add_argument(
+        "--include-person-id",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="also fetch this known person by ID when --list-people (repeatable; useful for people omitted from /people)",
+    )
+    parser.add_argument(
+        "--hide-people",
+        action="store_true",
+        help="with --list-people, hide comma-named people that have zero associated assets",
+    )
+    parser.add_argument(
+        "--delete-people",
+        action="store_true",
+        help="with --list-people, delete all identified people with commas in their names",
+    )
+    parser.add_argument(
         "--tag-status",
         choices=("yes", "no", "all"),
         default="all",
@@ -274,17 +426,25 @@ def parse_args() -> argparse.Namespace:
         "--dry-run",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="preview removal of the comma-named person's face from fully tagged images (default; use --no-dry-run to apply)",
+        help="preview changes without updating Immich (default; use --no-dry-run to apply)",
     )
     parser.add_argument(
         "--confirm",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="ask before each image change (default; use --no-confirm to skip prompts)",
+        help="ask before each image or person change (default; use --no-confirm to skip prompts)",
     )
     args = parser.parse_args()
     if args.top is not None and args.top < 0:
         parser.error("--top must be zero or greater")
+    if args.include_person_id and not args.list_people:
+        parser.error("--include-person-id requires --list-people")
+    if args.hide_people and not args.list_people:
+        parser.error("--hide-people requires --list-people")
+    if args.delete_people and not args.list_people:
+        parser.error("--delete-people requires --list-people")
+    if args.hide_people and args.delete_people:
+        parser.error("--hide-people and --delete-people cannot be used together")
     return args
 
 
@@ -303,13 +463,66 @@ def main() -> int:
         base_url = base_url[:-4].rstrip("/")
 
     try:
-        if not args.list_people:
+        if not args.list_people or args.hide_people or args.delete_people:
             print(f"Mode: {'dry run' if args.dry_run else 'LIVE: changes will be applied'}")
-        people = get_comma_named_people(base_url, api_key)
+        people = get_comma_named_people(
+            base_url,
+            api_key,
+            include_person_ids=args.include_person_id,
+        )
+        for person in people:
+            person_id = person.get("id")
+            if not isinstance(person_id, str) or not person_id:
+                raise ImmichApiError(f"Person {person.get('name', '(unnamed)')!r} has no id")
+            person["assetCount"] = get_person_asset_count(base_url, api_key, person_id)
         print(f"Found {len(people)} people with a comma in their name.")
         if args.list_people:
             for person in people:
-                print(f"{person['name']} (id: {person.get('id', 'unknown')})")
+                print(format_person_summary(person))
+                if args.delete_people:
+                    person_id = person["id"]
+                    if args.dry_run:
+                        print("\tDry run: would delete this comma-named person and unassign its faces.")
+                        continue
+
+                    should_delete = True
+                    if args.confirm:
+                        try:
+                            answer = input("\tDelete this person? [y/N] ").strip().casefold()
+                        except EOFError:
+                            answer = ""
+                        should_delete = answer in {"y", "yes"}
+                    if should_delete:
+                        delete_person(base_url, api_key, person_id)
+                        print("\tPerson deleted; its faces are unassigned.")
+                    else:
+                        print("\tSkipped deleting this person.")
+                    continue
+
+                if not args.hide_people or person.get("assetCount", 0) != 0:
+                    continue
+
+                person_id = person["id"]
+                if person.get("isHidden") is True:
+                    print("\tAlready hidden.")
+                    continue
+                if args.dry_run:
+                    print("\tDry run: would hide this zero-asset person.")
+                    continue
+
+                should_hide = True
+                if args.confirm:
+                    try:
+                        answer = input("\tHide this person? [y/N] ").strip().casefold()
+                    except EOFError:
+                        answer = ""
+                    should_hide = answer in {"y", "yes"}
+                if should_hide:
+                    hide_person(base_url, api_key, person_id)
+                    person["isHidden"] = True
+                    print("\tPerson hidden.")
+                else:
+                    print("\tSkipped hiding this person.")
             return 0
 
         images_processed = 0

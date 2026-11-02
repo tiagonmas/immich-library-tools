@@ -33,6 +33,7 @@ export IMMICH_API_KEY="your-api-key"
 `IMMICH_BASE_URL` may include `/api`; the scripts handle either form. Image and
 video output uses direct Immich links. When the configured URL uses localhost,
 the links use `192.168.1.200` so they can be opened from another device.
+People-listing tools fetch every page from Immich, including hidden people.
 
 ## Usage
 
@@ -47,7 +48,12 @@ The finder inspects all associated images by default. It logs each person,
 image, Immich link, tagged people, and whether all individual names are tagged.
 The tag check is informational; in live mode, the comma-named person's face is
 removed from every selected associated image, including images missing one or
-more individual-name tags.
+more individual-name tags. To find comma-named people omitted from the regular
+people list, it searches similar names for each distinct named person and
+deduplicates the returned people before filtering for commas. This requires one
+name-search API request per distinct name and may take time for a large library.
+For each comma-named result, it also reports the associated asset count; rows
+with one or more assets are printed in red.
 
 Options for `people_comma_finder.py`:
 
@@ -55,9 +61,17 @@ Options for `people_comma_finder.py`:
 | --- | --- |
 | `--top N` | Inspect at most `N` images total. By default, inspect all images. |
 | `--list-people` | List comma-named people and exit without searching images. |
+| `--include-person-id ID` | With `--list-people`, also fetch a known person by ID if Immich omits it from `/people`. Repeat for multiple IDs. |
+| `--hide-people` | With `--list-people`, hide comma-named people with zero associated assets. Respects dry-run and confirmation settings. |
+| `--delete-people` | With `--list-people`, delete all identified comma-named people and unassign their faces. Cannot be combined with `--hide-people`. Respects dry-run and confirmation settings. |
 | `--tag-status yes\|no\|all` | Show images where all individual names are tagged (`yes`), where one or more are missing (`no`), or both (`all`, default). This also limits which images are eligible for removal in live mode. |
-| `--dry-run` / `--no-dry-run` | Preview removals without changing Immich (default), or apply removals. |
-| `--confirm` / `--no-confirm` | Ask before each image change (default), or apply live changes without prompts. Confirmation only applies with `--no-dry-run`. |
+| `--dry-run` / `--no-dry-run` | Preview changes without updating Immich (default), or apply changes. |
+| `--confirm` / `--no-confirm` | Ask before each image or person change (default), or apply live changes without prompts. Confirmation only applies with `--no-dry-run`. |
+
+To apply hides or deletes, use `--no-dry-run`; the default dry-run mode only
+reports the planned changes. With the default confirmation setting, the script
+asks before each eligible person change. Deleting removes each person record
+and unassigns its faces, while leaving the assets in Immich.
 
 Examples:
 
@@ -65,6 +79,8 @@ Examples:
 python3 people_comma_finder.py --top 10
 python3 people_comma_finder.py --tag-status no --top 100
 python3 people_comma_finder.py --top 2 --no-dry-run --confirm
+python3 people_comma_finder.py --list-people --hide-people --no-dry-run
+python3 people_comma_finder.py --list-people --delete-people --no-dry-run
 ```
 
 ### People with periods
