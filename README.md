@@ -13,7 +13,7 @@ described below.
 | --- | --- |
 | `people_comma_finder.py` | Finds people whose names contain a comma, lists their associated images, reports the people tagged in each image, and checks whether each comma-separated name is also tagged. By default it previews removing the comma-named person's face from images. |
 | `people_comma_list.py` | Lists people whose names contain a comma, with their IDs. It does not search images. |
-| `tags_comma_list.py` | Loads all Immich tags and lists those whose names contain a comma. |
+| `tags_comma_list.py` | Lists comma-named tags and can replace those tag assignments on images with separate tags. |
 | `people_dot_finder.py` | Finds people whose names contain a period, shows exact or likely similar names (80% similarity or higher), recommends the top match, and prompts before merging. A confirmed merge keeps the recommended person's record. |
 | `people_similar_name_finder.py` | Lists people and possible duplicate names. For pairs scoring above 90%, it asks whether to merge; a merge happens only after an affirmative answer. |
 | `videos_without_people.py` | Lists videos with no people tagged, including a link to open each video in Immich. |
@@ -22,12 +22,15 @@ described below.
 The comma finder can modify Immich data when run with `--no-dry-run`; it removes
 the comma-named person's detected face entries from associated images. The dot
 finder and similar-name finder can merge people after you confirm a suggested
-merge. The remaining scripts only read data.
+merge. The tag list script can update image tags with `--replace`; it defaults
+to dry-run mode and only applies changes with `--no-dry-run`.
 
 ## Setup
 
 Requirements: Python 3.10 or newer and an Immich API key with permission to read
-people, assets, and tags. Set the Immich URL and API key in the environment:
+people, assets, and tags. Using tag replacement additionally requires
+permissions to create tags, update tag assignments and assets, and delete tags.
+Set the Immich URL and API key in the environment:
 
 ```sh
 export IMMICH_BASE_URL="http://localhost:2283"
@@ -130,12 +133,63 @@ List all tags whose names contain a comma:
 
 ```sh
 python3 tags_comma_list.py
+
+# Sort matching tags by creation time, oldest first.
+python3 tags_comma_list.py --sort-created-at asc
+
+# Sort all matching tags by creation time, newest first.
+python3 tags_comma_list.py --sort-created-at desc
+
+# Show comma-named tags created after October 31, 2026, newest first.
+python3 tags_comma_list.py --created-after 2026-10-31 --sort-created-at desc
+
+# Filter after an exact UTC timestamp instead of the start of a date.
+python3 tags_comma_list.py --created-after 2026-10-31T22:12:43Z
+
+# Preview replacing comma tags on the first matching tag (dry-run is the default).
+python3 tags_comma_list.py --replace --top 1
+
+# Apply the replacement to the first matching tag after reviewing the dry-run.
+python3 tags_comma_list.py --replace --top 1 --no-dry-run --confirm
+
+# Apply replacements without pausing for confirmation after each tag.
+python3 tags_comma_list.py --replace --no-dry-run --no-confirm
 ```
 
-This read-only script prints each matching tag and its ID. It loads the full
-tag collection and follows pagination when the API response provides pages.
+Example output:
+
+```text
+Found 1 tags with a comma in their name (out of 284 tags loaded).
+Vasco Sousa Pinto, Tiago (tag ID: dbadf41c-ed89-4500-a8bd-9a89ff4f37f6; createdAt: 2026-10-31T22:12:43.231Z)
+```
+
+This read-only script prints each matching tag, its ID, and its creation date.
+It loads the full tag collection and follows pagination when the API response
+provides pages.
 Immich's current `GET /tags` endpoint returns the complete tag list in one
-response.
+response. By default, results are sorted alphabetically by tag name. Available
+options:
+
+| Option | Behavior |
+| --- | --- |
+| `--sort-created-at asc\|desc` | Sort by the tag's `createdAt` timestamp, oldest first (`asc`) or newest first (`desc`). Tags without a valid creation date appear last. |
+| `--created-after DATE` | Include only tags created strictly after the given ISO date or datetime. Date-only values such as `2026-10-31` mean midnight UTC; timestamps may include `Z` or a timezone offset. |
+| `--top N` | List or process only the first `N` matching tags after date filtering and sorting. Immich currently returns the full tag collection in one response, so this limits processing and output, not the API response size. |
+| `--replace` | For each selected comma-named tag, add its comma-separated parts as tags on every matching image, then delete the original tag from Immich. Missing individual tags are created. |
+| `--dry-run` / `--no-dry-run` | Preview planned replacement changes without making API updates (default), or apply them. `--no-dry-run` requires `--replace`. |
+| `--confirm` / `--no-confirm` | Ask whether to apply each selected tag replacement in live mode (default), or apply all without prompts. A declined tag is skipped and processing continues. Dry-run never prompts. |
+
+Passing `--confirm` with `--replace` while in dry-run mode prints a warning;
+use `--no-dry-run` to enable live changes and confirmation prompts.
+
+The script applies the date filter after loading the complete tag collection.
+Tags without a valid `createdAt` value are excluded when `--created-after` is
+used. Replacement searches all pages of images associated with each selected
+tag and adds the individual tags to those images. Deleting the original tag
+removes it from the entire library, including any videos that use it; the
+individual replacement tags are added to images only. In dry-run mode the
+script logs image counts, tags it would create, and the planned additions and
+tag deletion without calling any update API.
 
 ### People with periods
 
