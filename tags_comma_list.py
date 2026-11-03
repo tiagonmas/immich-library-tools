@@ -164,6 +164,75 @@ def get_tag_images(base_url: str, api_key: str, tag_id: str) -> list[dict]:
         time.sleep(0.05)
 
 
+def photo_link(base_url: str, asset_id: str) -> str:
+    url = f"{base_url}/photos/{quote(asset_id, safe='')}"
+    return f"[{url}]({url})"
+
+
+def verify_tag_removed_from_images(
+    base_url: str,
+    api_key: str,
+    assets: list[dict],
+    tag_id: str,
+    tag_name: str,
+) -> None:
+    """Reload each image and report whether the removed tag is still attached."""
+    for asset in assets:
+        asset_id = asset["id"]
+        filename = asset.get("originalFileName") or "unknown filename"
+        try:
+            refreshed_asset = api_request(
+                base_url,
+                api_key,
+                f"/assets/{quote(asset_id, safe='')}",
+            )
+        except ImmichApiError as error:
+            print(
+                f"\t\tCould not verify photo {photo_link(base_url, asset_id)} "
+                f"(filename: {filename}): {error}"
+            )
+            continue
+
+        if not isinstance(refreshed_asset, dict) or not isinstance(
+            refreshed_asset.get("tags"), list
+        ):
+            print(
+                f"\t\tCould not verify photo {photo_link(base_url, asset_id)} "
+                f"(filename: {filename}): refreshed asset response has no tags list."
+            )
+            continue
+
+        current_tags = [
+            item for item in refreshed_asset["tags"] if isinstance(item, dict)
+        ]
+        current_tag_names = [
+            tag_value(item) or str(item.get("id", "unknown tag ID"))
+            for item in current_tags
+        ]
+        current_tags_log = ", ".join(current_tag_names) or "(none)"
+        still_attached = any(
+            item.get("id") == tag_id or tag_value(item) == tag_name
+            for item in current_tags
+        )
+        if still_attached:
+            print(
+                f"\t\tAPI association check: original tag is still attached to photo "
+                f"{photo_link(base_url, asset_id)} (filename: {filename})."
+            )
+        else:
+            print(
+                f"\t\tAPI association check: original tag is absent from photo "
+                f"{photo_link(base_url, asset_id)} (filename: {filename})."
+            )
+        print(f"\t\tTags returned by API: {current_tags_log}")
+        if not still_attached:
+            print(
+                "\t\tThis checks Immich's asset tag associations only. The web UI "
+                "can also show imported metadata tags from EXIF TagList/Keywords "
+                "or an XMP sidecar, which this asset response does not expose."
+            )
+
+
 def tag_value(tag: dict) -> str:
     value = tag.get("value", tag.get("name", ""))
     return value if isinstance(value, str) else ""
@@ -214,7 +283,10 @@ def replace_tag_on_images(
     print(f"\tImages using this tag: {len(asset_ids)}")
     for asset in assets:
         filename = asset.get("originalFileName") or "unknown filename"
-        print(f"\t\tPhoto ID: {asset['id']} (filename: {filename})")
+        print(
+            f"\t\tPhoto: {photo_link(base_url, asset['id'])} "
+            f"(filename: {filename})"
+        )
 
     tag_ids_by_value = get_tag_ids_by_value(all_tags)
     missing_names = [
@@ -229,7 +301,8 @@ def replace_tag_on_images(
         if asset_ids:
             print(
                 f"\tWould add all individual tags to {len(asset_ids)} images, "
-                f"then delete the original tag {name!r}."
+                f"remove the original tag from those images, then delete "
+                f"the tag record {name!r}."
             )
         else:
             print(f"\tWould delete the original tag {name!r}; no images use it.")
@@ -301,13 +374,25 @@ def replace_tag_on_images(
         )
     print(f"\tAdded individual tags to {len(asset_ids)} images.")
 
+    encoded_tag_id = quote(tag_id, safe="")
+    for asset_batch in chunks(asset_ids, WRITE_BATCH_SIZE):
+        api_request(
+            base_url,
+            api_key,
+            f"/tags/{encoded_tag_id}/assets",
+            {"ids": asset_batch},
+            method="DELETE",
+        )
+    print(f"\tRemoved original tag from {len(asset_ids)} images.")
+
     api_request(
         base_url,
         api_key,
-        f"/tags/{quote(tag_id, safe='')}",
+        f"/tags/{encoded_tag_id}",
         method="DELETE",
     )
     print(f"\tDeleted original tag {name!r}.")
+    verify_tag_removed_from_images(base_url, api_key, assets, tag_id, name)
 
 
 def parse_args() -> argparse.Namespace:
@@ -441,7 +526,9 @@ def main() -> int:
             "Use --no-dry-run to apply changes and be prompted."
         )
 
-    for tag in matching_tags:
+    for tag_index, tag in enumerate(matching_tags):
+        if tag_index:
+            print("------------------------")
         name = tag_value(tag)
         print(
             f"{name} (tag ID: {tag.get('id', 'unknown')}; "

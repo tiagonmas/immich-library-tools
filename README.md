@@ -16,6 +16,7 @@ described below.
 | `tags_comma_list.py` | Lists comma-named tags and can replace those tag assignments on images with separate tags. |
 | `people_dot_finder.py` | Finds people whose names contain a period, shows exact or likely similar names (80% similarity or higher), recommends the top match, and prompts before merging. A confirmed merge keeps the recommended person's record. |
 | `people_similar_name_finder.py` | Lists people and possible duplicate names. For pairs scoring above 90%, it asks whether to merge; a merge happens only after an affirmative answer. |
+| `tags_similar_name_finder.py` | Lists similar tag names, automatically merges exact dot/space or first-letter capitalization variants, and asks before other replacements above 90%. |
 | `videos_without_people.py` | Lists videos with no people tagged, including a link to open each video in Immich. |
 | `videos_without_people_web.py` | Runs a paginated web page with a thumbnail grid, hover video previews, durations, duration sorting (shortest first by default), and total count for videos that have no people tagged. It shows a loading indicator while counting. Each video link opens in a new tab. |
 
@@ -189,7 +190,49 @@ tag and adds the individual tags to those images. Deleting the original tag
 removes it from the entire library, including any videos that use it; the
 individual replacement tags are added to images only. In dry-run mode the
 script logs image counts, tags it would create, and the planned additions and
-tag deletion without calling any update API.
+tag deletion without calling any update API. In live mode it reloads each
+changed image and reports whether the original tag remains in Immich's asset
+tag associations. This API check cannot confirm whether the web detail panel
+also displays a matching tag imported from EXIF `TagList`/`Keywords` or an XMP
+sidecar; Immich reads tags from those metadata sources as well.
+
+### Similar tag names
+
+```sh
+# List tag names that are at least 80% similar to another tag name.
+# Exact dot/space and first-letter capitalization variants are merged
+# automatically. Other pairs scoring above 90% prompt before replacement.
+python3 tags_similar_name_finder.py
+
+# Use a 90% similarity cutoff.
+python3 tags_similar_name_finder.py --threshold 90
+
+# Include tags that have no similar names at the selected cutoff.
+python3 tags_similar_name_finder.py --include-unmatched
+```
+
+The script loads every tag, following pagination when the API returns pages,
+then lists each matching tag with its similar names and similarity scores.
+Comparisons ignore case, accents, and punctuation. Similarity scores are string
+comparisons, not calibrated probabilities. For pairs scoring above 90%, an
+exact dot/space variant such as `Ana.Monjardino` and `Ana Monjardino` is merged
+automatically into the undotted tag. A pair differing only in the first
+letter's case, such as `joao` and `Joao`, is merged automatically into the
+capitalized tag. Any tag in a high-similarity pair with zero assets is deleted
+automatically; if both have zero assets, both are deleted. Other
+dotted/undotted pairs ask whether to merge the dotted tag into the undotted
+one. Other pairs show two numbered directions; enter `0` or press Enter to
+skip. For these numbered choices, option 1 replaces the tag used by more
+assets; ties use alphabetical order. A confirmed or automatic merge adds the
+kept tag to every image and video using the replaced tag, then deletes the
+replaced tag. The script continues to the next pair after each merge or prompt.
+These changes require tag update, asset update, and tag delete permissions.
+Available options:
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `--threshold PERCENT` | `80` | Minimum similarity percentage to report (0–100). |
+| `--include-unmatched` | Off | Also list tags with no similar names at the selected threshold. |
 
 ### People with periods
 
