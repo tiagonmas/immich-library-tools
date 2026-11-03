@@ -1,8 +1,11 @@
 # Immich tools
 
-Small command-line and web tools for inspecting people and videos in an Immich
-library. The scripts use Immich's API and share the configuration described
-below.
+Python command-line and web tools for auditing and maintaining an Immich
+library. They find people and tags with comma or period names, review possible
+duplicate people, inspect and optionally remove face assignments, and find
+videos without people tags. Some tools can also hide, delete, or merge people
+after confirmation. All tools use Immich's API and share the configuration
+described below.
 
 ## Tools
 
@@ -10,6 +13,7 @@ below.
 | --- | --- |
 | `people_comma_finder.py` | Finds people whose names contain a comma, lists their associated images, reports the people tagged in each image, and checks whether each comma-separated name is also tagged. By default it previews removing the comma-named person's face from images. |
 | `people_comma_list.py` | Lists people whose names contain a comma, with their IDs. It does not search images. |
+| `tags_comma_list.py` | Loads all Immich tags and lists those whose names contain a comma. |
 | `people_dot_finder.py` | Finds people whose names contain a period, shows exact or likely similar names (80% similarity or higher), recommends the top match, and prompts before merging. A confirmed merge keeps the recommended person's record. |
 | `people_similar_name_finder.py` | Lists people and possible duplicate names. For pairs scoring above 90%, it asks whether to merge; a merge happens only after an affirmative answer. |
 | `videos_without_people.py` | Lists videos with no people tagged, including a link to open each video in Immich. |
@@ -23,7 +27,7 @@ merge. The remaining scripts only read data.
 ## Setup
 
 Requirements: Python 3.10 or newer and an Immich API key with permission to read
-people and assets. Set the Immich URL and API key in the environment:
+people, assets, and tags. Set the Immich URL and API key in the environment:
 
 ```sh
 export IMMICH_BASE_URL="http://localhost:2283"
@@ -119,6 +123,19 @@ python3 people_comma_finder.py --list-people --delete-people --no-dry-run --no-c
 `--hide-people` and `--delete-people` require `--list-people` and cannot be
 combined. `--include-person-id ID` can be repeated for multiple known IDs. Use
 `python3 people_comma_finder.py --help` to see the full command usage.
+
+### Tags with commas
+
+List all tags whose names contain a comma:
+
+```sh
+python3 tags_comma_list.py
+```
+
+This read-only script prints each matching tag and its ID. It loads the full
+tag collection and follows pagination when the API response provides pages.
+Immich's current `GET /tags` endpoint returns the complete tag list in one
+response.
 
 ### People with periods
 
