@@ -117,8 +117,11 @@ python3 people_comma_finder.py --list-people --hide-people --no-dry-run
 # Hide them without a prompt for each person.
 python3 people_comma_finder.py --list-people --hide-people --no-dry-run --no-confirm
 
-# Preview deleting all identified comma-named people.
+# Preview deleting all identified comma-named people, including people with assets.
 python3 people_comma_finder.py --list-people --delete-people
+
+# Delete all identified comma-named people, asking before each person.
+python3 people_comma_finder.py --list-people --delete-people --no-dry-run
 
 # Delete them without asking for confirmation for each person.
 python3 people_comma_finder.py --list-people --delete-people --no-dry-run --no-confirm
