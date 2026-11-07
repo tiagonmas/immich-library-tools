@@ -4,8 +4,8 @@ Python command-line and web tools for auditing and maintaining an Immich
 library. They find people and tags with comma or period names, review possible
 duplicate people, inspect and optionally remove face assignments, and find
 videos without people tags. Some tools can also hide, delete, or merge people
-after confirmation. All tools use Immich's API and share the configuration
-described below.
+after confirmation. Most tools use Immich's API; the safe backup finder compares
+local files and does not connect to Immich.
 
 ## Tools
 
@@ -19,6 +19,7 @@ described below.
 | `tags_similar_name_finder.py` | Lists similar tag names, automatically merges exact dot/space or first-letter capitalization variants, and asks before other replacements above 90%. |
 | `videos_without_people.py` | Lists videos with no people tagged, including a link to open each video in Immich. |
 | `videos_without_people_web.py` | Runs a paginated web page with a thumbnail grid, hover video previews, durations, duration sorting (shortest first by default), and total count for videos that have no people tagged. It shows a loading indicator while counting. Each video link opens in a new tab. |
+| `onedrive_safe_backup_finder.py` | Finds OneDrive `safeBackup` copies, compares them with matching originals and XMP sidecars, optionally shows metadata differences, reports image-content differences, and can delete confirmed backup copies. |
 
 The comma finder can modify Immich data when run with `--no-dry-run`; it removes
 the comma-named person's detected face entries from associated images. The dot
@@ -28,9 +29,10 @@ to dry-run mode and only applies changes with `--no-dry-run`.
 
 ## Setup
 
-Requirements: Python 3.10 or newer and an Immich API key with permission to read
-people, assets, and tags. Using tag replacement additionally requires
-permissions to create tags, update tag assignments and assets, and delete tags.
+Immich API tools require Python 3.10 or newer and an Immich API key with
+permission to read people, assets, and tags. Using tag replacement additionally
+requires permissions to create tags, update tag assignments and assets, and
+delete tags.
 Set the Immich URL and API key in the environment:
 
 ```sh
@@ -42,6 +44,10 @@ export IMMICH_API_KEY="your-api-key"
 video output uses direct Immich links. When the configured URL uses localhost,
 the links use `192.168.1.200` so they can be opened from another device.
 People-listing tools fetch every page from Immich, including hidden people.
+The OneDrive safe backup finder does not need Immich credentials; it requires
+ExifTool to compare metadata. It compares JPEG image streams without common
+metadata segments. For pixel-level comparison of supported image files, install
+and configure `ffmpeg`.
 
 ## Usage
 
@@ -297,6 +303,43 @@ python3 people_similar_name_finder.py --threshold 0.85
 
 The dot and similar-name tools continue to the next person after a declined
 merge. Similarity scores are name comparisons, not calibrated probabilities.
+
+### OneDrive safeBackup files
+
+Scan the current directory and its subdirectories for files with a
+`-safeBackup-####` suffix. The script pairs each backup with an existing
+same-folder original, compares metadata and XMP sidecars, and reports whether
+the file bytes or JPEG image stream differ. It leaves unmatched or ambiguous
+backups untouched. The default is a dry run.
+
+Run these commands from the repository directory. Replace
+`/path/to/your/photo-library` with the folder to scan.
+
+```sh
+# Scan the current folder recursively and preview all matching backups.
+python3 onedrive_safe_backup_finder.py
+
+# Preview the first 10 backups under a specific library folder.
+python3 onedrive_safe_backup_finder.py --folder "/path/to/your/photo-library" --top 10
+
+# Include metadata differences in the comparison output.
+python3 onedrive_safe_backup_finder.py --folder "/path/to/your/photo-library" --show-metadata
+
+# Delete matched backups and their XMP sidecars, confirming each one.
+python3 onedrive_safe_backup_finder.py --folder "/path/to/your/photo-library" --no-dry-run
+
+# Delete matched backups without confirmation prompts.
+python3 onedrive_safe_backup_finder.py --folder "/path/to/your/photo-library" --no-dry-run --no-confirm
+```
+
+The script recognizes the `filename-hostname-safeBackup-0001.ext` form used by
+the `abraunegg/onedrive` client, as well as names without a hostname segment.
+It only deletes a backup when exactly one likely original exists. `--top N`
+limits the number of backup files processed, and `--no-confirm` only skips
+prompts in live mode. Metadata differences are hidden unless `--show-metadata`
+is passed. ExifTool is required for metadata comparison. If `ffmpeg` is
+available, the script also reports first-frame pixel differences; without it,
+JPEG image streams are compared after omitting common metadata segments.
 
 ### Videos without people tags
 <img width="882" height="591" alt="image" src="https://github.com/user-attachments/assets/128db1e0-9deb-4626-8e47-1226f6fc84ae" />
