@@ -56,7 +56,7 @@ class FileComparison:
     backup_hash: str | None
     original_size: int | None
     backup_size: int | None
-    jpeg_stream_identical: bool | None
+    image_content_identical: bool | None
 
 
 def parse_args() -> argparse.Namespace:
@@ -93,7 +93,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-confirm",
         action="store_true",
-        help="do not ask before deleting matched backup files and their XMP sidecars",
+        help=(
+            "auto-delete when image content is verified identical; still ask if "
+            "image content differs or cannot be verified"
+        ),
     )
     args = parser.parse_args()
     if args.top is not None and args.top < 0:
@@ -499,7 +502,7 @@ def compare_image_content(
             f"({original_dimensions[0]}x{original_dimensions[1]} vs "
             f"{backup_dimensions[0]}x{backup_dimensions[1]})."
         )
-        return jpeg_stream_identical
+        return jpeg_stream_identical if jpeg_stream_identical is not None else False
 
     with tempfile.TemporaryDirectory(prefix="safe-backup-compare-") as temporary:
         directory = Path(temporary)
@@ -516,11 +519,13 @@ def compare_image_content(
         )
     if result is None:
         print("\t\tPixel comparison failed: decoded frame size did not match metadata dimensions.")
+        pixel_content_identical = None
     elif result[0]:
         print(
             f"\t\tFirst-frame pixels: identical ({original_dimensions[0]}x"
             f"{original_dimensions[1]})."
         )
+        pixel_content_identical = True
     else:
         bounds = result[3]
         print(
@@ -530,7 +535,10 @@ def compare_image_content(
         )
         if bounds is not None:
             print(f"\t\tChanged-pixel bounds: x={bounds[0]}..{bounds[2]}, y={bounds[1]}..{bounds[3]}.")
-    return jpeg_stream_identical
+        pixel_content_identical = False
+    if jpeg_stream_identical is not None:
+        return jpeg_stream_identical
+    return pixel_content_identical
 
 
 def print_metadata_differences(
@@ -553,7 +561,7 @@ def compare_files(
     metadata_error: str | None = None
     original_metadata: dict[str, Any] = {}
     backup_metadata: dict[str, Any] = {}
-    jpeg_stream_identical: bool | None = None
+    image_content_identical: bool | None = None
     try:
         original_metadata = exiftool_metadata(original)
         backup_metadata = exiftool_metadata(backup)
@@ -579,7 +587,7 @@ def compare_files(
             f"(original {original_size} bytes; backup {backup_size} bytes)."
         )
         if original.suffix.casefold() in IMAGE_EXTENSIONS:
-            jpeg_stream_identical = compare_image_content(
+            image_content_identical = compare_image_content(
                 original,
                 backup,
                 original_metadata,
@@ -598,7 +606,7 @@ def compare_files(
         backup_hash=backup_hash,
         original_size=original_size,
         backup_size=backup_size,
-        jpeg_stream_identical=jpeg_stream_identical,
+        image_content_identical=image_content_identical,
     )
 
 
@@ -688,11 +696,15 @@ def process_backup(
         print(f"\t{RED}{message}{RESET}")
         return
 
+    file_bytes_identical = comparison.original_hash == comparison.backup_hash
+    image_content_verified_same = (
+        file_bytes_identical or comparison.image_content_identical is True
+    )
     if (
-        comparison.jpeg_stream_identical is True
-        and (comparison.original_hash != comparison.backup_hash or xmp_sidecars_differ)
+        image_content_verified_same
+        and (not file_bytes_identical or xmp_sidecars_differ)
     ):
-        message = "JPEG image content is identical; observed differences are only in metadata or XMP sidecars."
+        message = "Image content is identical; observed differences are only in metadata or XMP sidecars."
         print(f"\t{GREEN}{message}{RESET}")
 
     files_to_delete = [backup, *backup_xmps]
@@ -700,10 +712,19 @@ def process_backup(
         print("\tDry run: would delete the safe backup and the listed backup XMP sidecar(s).")
         for path in files_to_delete:
             print(f"\t\tWould delete: {path.name}")
+        if not confirm and not image_content_verified_same:
+            print(
+                "\tImage content differs or could not be verified; live mode will still ask for confirmation."
+            )
         return
 
     should_delete = True
-    if confirm:
+    must_confirm = confirm or not image_content_verified_same
+    if must_confirm:
+        if not confirm and not image_content_verified_same:
+            print(
+                "\tImage content differs or could not be verified; confirmation is required even with --no-confirm."
+            )
         try:
             answer = input("\tDelete this safe backup and its XMP sidecar(s)? [y/N] ").strip().casefold()
         except EOFError:
@@ -735,7 +756,7 @@ def main() -> int:
     selected = backups if args.top is None else backups[: args.top]
     mode = "DRY RUN: no files will be deleted" if args.dry_run else "LIVE: matching backup files can be deleted"
     if not args.dry_run and args.no_confirm:
-        mode += "; confirmation prompts disabled"
+        mode += "; identical/metadata-only files auto-confirmed, changed or unverified image content still prompts"
     print(f"Folder: {folder}")
     print(f"Found {len(backups)} safeBackup files; processing {len(selected)}.")
     print(f"Mode: {mode}")

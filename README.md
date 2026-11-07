@@ -328,18 +328,21 @@ python3 onedrive_safe_backup_finder.py --folder "/path/to/your/photo-library" --
 # Delete matched backups and their XMP sidecars, confirming each one.
 python3 onedrive_safe_backup_finder.py --folder "/path/to/your/photo-library" --no-dry-run
 
-# Delete matched backups without confirmation prompts.
+# Auto-delete metadata-only differences; still confirm image-content differences.
 python3 onedrive_safe_backup_finder.py --folder "/path/to/your/photo-library" --no-dry-run --no-confirm
 ```
 
 The script recognizes the `filename-hostname-safeBackup-0001.ext` form used by
 the `abraunegg/onedrive` client, as well as names without a hostname segment.
 It only deletes a backup when exactly one likely original exists. `--top N`
-limits the number of backup files processed, and `--no-confirm` only skips
-prompts in live mode. Metadata differences are hidden unless `--show-metadata`
-is passed. ExifTool is required for metadata comparison. If `ffmpeg` is
-available, the script also reports first-frame pixel differences; without it,
-JPEG image streams are compared after omitting common metadata segments.
+limits the number of backup files processed. In live mode, `--no-confirm`
+skips prompts for exact duplicates or verified metadata-only changes. The
+script always asks before deleting when image content differs or cannot be
+verified, even with `--no-confirm`. Metadata differences are hidden unless
+`--show-metadata` is passed. ExifTool is required for metadata comparison. If
+`ffmpeg` is available, the script also reports first-frame pixel differences;
+without it, JPEG image streams are compared after omitting common metadata
+segments.
 
 ### Videos without people tags
 <img width="882" height="591" alt="image" src="https://github.com/user-attachments/assets/128db1e0-9deb-4626-8e47-1226f6fc84ae" />
