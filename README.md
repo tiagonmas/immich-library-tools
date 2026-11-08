@@ -16,6 +16,7 @@ local files and does not connect to Immich.
 | `tags_comma_list.py` | Lists comma-named tags and can replace those tag assignments on images with separate tags. |
 | `people_dot_finder.py` | Finds people whose names contain a period, shows exact or likely similar names (80% similarity or higher), recommends the top match, and prompts before merging. A confirmed merge keeps the recommended person's record. |
 | `people_similar_name_finder.py` | Lists people and possible duplicate names. For pairs scoring above 90%, it asks whether to merge; a merge happens only after an affirmative answer. |
+| `image_folder_date_validator.py` | Finds images whose Immich timeline dates conflict with the year or date implied by their folder paths. |
 | `tags_similar_name_finder.py` | Lists similar tag names, automatically merges exact dot/space or first-letter capitalization variants, and asks before other replacements above 90%. |
 | `videos_without_people.py` | Lists videos with no people tagged, including a link to open each video in Immich. |
 | `videos_without_people_web.py` | Runs a paginated web page with a thumbnail grid, hover video previews, durations, duration sorting (shortest first by default), and total count for videos that have no people tagged. It shows a loading indicator while counting. Each video link opens in a new tab. |
@@ -304,6 +305,33 @@ python3 people_similar_name_finder.py --threshold 0.85
 The dot and similar-name tools continue to the next person after a declined
 merge. Similarity scores are name comparisons, not calibrated probabilities.
 
+### Image dates and folder dates
+
+Compare each image's Immich timeline date with the date implied by its folder
+path. The script reads `fileCreatedAt` and `originalPath` from Immich and does
+not make changes.
+
+```sh
+# List all images whose timeline dates disagree with their folders.
+python3 image_folder_date_validator.py
+
+# List at most the first 20 mismatches.
+python3 image_folder_date_validator.py --top 20
+
+# Ignore backup copies whose filenames contain "safeBackup".
+python3 image_folder_date_validator.py --ignore safeBackup
+```
+
+A folder named with just a year, such as `2005`, checks only the image year. A
+folder beginning with `YYYY.MM` or `YYYY.MM.DD` also provides a target date,
+using the first day when only a year and month are present. Images more than 60
+days from that target date are listed. Images without a valid Immich date are
+also listed when their folder provides a date. Folders without a recognizable
+year or date are skipped.
+
+Use `--ignore TEXT` to skip filenames containing a case-insensitive substring;
+repeat the option to ignore multiple filename patterns.
+
 ### OneDrive safeBackup files
 
 Scan the current directory and its subdirectories for files with a
@@ -322,6 +350,9 @@ python3 onedrive_safe_backup_finder.py
 # Preview the first 10 backups under a specific library folder.
 python3 onedrive_safe_backup_finder.py --folder "/path/to/your/photo-library" --top 10
 
+# Only inspect safeBackup filenames containing "TiagoPC".
+python3 onedrive_safe_backup_finder.py --folder "/path/to/your/photo-library" --search "TiagoPC"
+
 # Include metadata differences in the comparison output.
 python3 onedrive_safe_backup_finder.py --folder "/path/to/your/photo-library" --show-metadata
 
@@ -335,14 +366,17 @@ python3 onedrive_safe_backup_finder.py --folder "/path/to/your/photo-library" --
 The script recognizes the `filename-hostname-safeBackup-0001.ext` form used by
 the `abraunegg/onedrive` client, as well as names without a hostname segment.
 It only deletes a backup when exactly one likely original exists. `--top N`
-limits the number of backup files processed. In live mode, `--no-confirm`
+limits the number of matching backup files processed. `--search TEXT` filters
+safeBackup filenames by a case-insensitive substring and prefers a unique
+candidate original containing that text. In live mode, `--no-confirm`
 skips prompts for exact duplicates or verified metadata-only changes. The
 script always asks before deleting when image content differs or cannot be
 verified, even with `--no-confirm`. Metadata differences are hidden unless
 `--show-metadata` is passed. ExifTool is required for metadata comparison. If
 `ffmpeg` is available, the script also reports first-frame pixel differences;
 without it, JPEG image streams are compared after omitting common metadata
-segments.
+segments. At the end, it reports how many safeBackup files it processed and
+how many backup and XMP files it deleted.
 
 ### Videos without people tags
 <img width="882" height="591" alt="image" src="https://github.com/user-attachments/assets/128db1e0-9deb-4626-8e47-1226f6fc84ae" />

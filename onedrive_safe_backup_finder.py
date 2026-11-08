@@ -74,6 +74,14 @@ def parse_args() -> argparse.Namespace:
         help="folder to scan recursively (default: current directory)",
     )
     parser.add_argument(
+        "--search",
+        metavar="TEXT",
+        help=(
+            "only process safeBackup files whose filename contains TEXT; "
+            "also prefer a unique matching original when resolving candidates"
+        ),
+    )
+    parser.add_argument(
         "--top",
         type=int,
         metavar="N",
@@ -123,7 +131,7 @@ def iter_files(folder: Path) -> list[Path]:
     return found
 
 
-def original_candidates(backup: Path) -> list[Path]:
+def original_candidates(backup: Path, search: str | None = None) -> list[Path]:
     parsed = backup_name(backup)
     if parsed is None:
         return []
@@ -146,7 +154,16 @@ def original_candidates(backup: Path) -> list[Path]:
         name = f"{stem}{backup.suffix}"
         for candidate in siblings.get(name.casefold(), []):
             candidates[str(candidate)] = candidate
-    return sorted(candidates.values(), key=lambda candidate: candidate.name.casefold())
+    ordered = sorted(candidates.values(), key=lambda candidate: candidate.name.casefold())
+    if search:
+        matching = [
+            candidate
+            for candidate in ordered
+            if search.casefold() in candidate.name.casefold()
+        ]
+        if matching:
+            return matching
+    return ordered
 
 
 def associated_xmps(media_path: Path) -> list[Path]:
@@ -662,21 +679,22 @@ def print_xmp_comparisons(
 
 
 def process_backup(
-    backup: Path, dry_run: bool, confirm: bool, show_metadata: bool
-) -> None:
+    backup: Path, dry_run: bool, confirm: bool, show_metadata: bool,
+    search: str | None,
+) -> tuple[bool, int]:
     print("\n" + "-" * 72)
     print(f"Safe backup: {backup}")
-    candidates = original_candidates(backup)
+    candidates = original_candidates(backup, search=search)
     if not candidates:
         message = "No matching original file found; leaving this backup untouched."
         print(f"\t{RED}{message}{RESET}")
-        return
+        return False, 0
     if len(candidates) > 1:
         message = "Ambiguous original match; leaving this backup untouched."
         print(f"\t{RED}{message}{RESET}")
         for candidate in candidates:
             print(f"\t\tPossible original: {candidate.name}")
-        return
+        return False, 0
 
     original = candidates[0]
     print(f"\tOriginal: {original}")
@@ -694,7 +712,7 @@ def process_backup(
     ):
         message = "Comparison was incomplete; will not delete this backup."
         print(f"\t{RED}{message}{RESET}")
-        return
+        return False, 0
 
     file_bytes_identical = comparison.original_hash == comparison.backup_hash
     image_content_verified_same = (
@@ -716,7 +734,7 @@ def process_backup(
             print(
                 "\tImage content differs or could not be verified; live mode will still ask for confirmation."
             )
-        return
+        return False, 0
 
     should_delete = True
     must_confirm = confirm or not image_content_verified_same
@@ -732,14 +750,21 @@ def process_backup(
         should_delete = answer in {"y", "yes"}
     if not should_delete:
         print("\tKept the safe backup and its XMP sidecar(s).")
-        return
+        return False, 0
 
+    backup_deleted = False
+    xmp_sidecars_deleted = 0
     for path in files_to_delete:
         try:
             path.unlink()
             print(f"\tDeleted: {path.name}")
+            if path == backup:
+                backup_deleted = True
+            else:
+                xmp_sidecars_deleted += 1
         except OSError as error:
             print(f"\tCould not delete {path.name}: {error}", file=sys.stderr)
+    return backup_deleted, xmp_sidecars_deleted
 
 
 def main() -> int:
@@ -753,23 +778,46 @@ def main() -> int:
         return 2
 
     backups = iter_files(folder)
-    selected = backups if args.top is None else backups[: args.top]
+    if args.search:
+        search = args.search.casefold()
+        matching_backups = [backup for backup in backups if search in backup.name.casefold()]
+    else:
+        matching_backups = backups
+    selected = matching_backups if args.top is None else matching_backups[: args.top]
     mode = "DRY RUN: no files will be deleted" if args.dry_run else "LIVE: matching backup files can be deleted"
     if not args.dry_run and args.no_confirm:
         mode += "; identical/metadata-only files auto-confirmed, changed or unverified image content still prompts"
     print(f"Folder: {folder}")
-    print(f"Found {len(backups)} safeBackup files; processing {len(selected)}.")
+    if args.search:
+        print(f"Filename search: {args.search}")
+        print(
+            f"Found {len(backups)} safeBackup files; "
+            f"{len(matching_backups)} match; processing {len(selected)}."
+        )
+    else:
+        print(f"Found {len(backups)} safeBackup files; processing {len(selected)}.")
     print(f"Mode: {mode}")
     if args.no_confirm and args.dry_run:
         print("Warning: --no-confirm has no effect in dry-run mode.")
 
+    deleted_backups = 0
+    deleted_xmp_sidecars = 0
     for backup in selected:
-        process_backup(
+        backup_deleted, xmp_deleted = process_backup(
             backup,
             args.dry_run,
             confirm=not args.no_confirm,
             show_metadata=args.show_metadata,
+            search=args.search,
         )
+        deleted_backups += backup_deleted
+        deleted_xmp_sidecars += xmp_deleted
+    total_deleted = deleted_backups + deleted_xmp_sidecars
+    print(
+        f"Processed {len(selected)} safeBackup files; deleted {deleted_backups} "
+        f"backup files and {deleted_xmp_sidecars} XMP sidecars "
+        f"({total_deleted} files total)."
+    )
     return 0
 
 
