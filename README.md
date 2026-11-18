@@ -7,6 +7,19 @@ videos without people tags. Some tools can also hide, delete, or merge people
 after confirmation. Most tools use Immich's API; the safe backup finder compares
 local files and does not connect to Immich.
 
+## Index
+
+- [people_comma_finder.py](#people-with-commas)
+- [people_comma_list.py](#people-with-commas)
+- [people_dot_finder.py](#people-with-periods)
+- [people_similar_name_finder.py](#similar-people-names)
+- [tags_comma_list.py](#tags-with-commas)
+- [tags_similar_name_finder.py](#similar-tag-names)
+- [videos_without_people.py](#videos-without-people-tags)
+- [videos_without_people_web.py](#videos-without-people-tags)
+- [image_folder_date_validator.py](#image-dates-and-folder-dates)
+- [onedrive_safe_backup_finder.py](#onedrive-safebackup-files)
+
 ## Tools
 
 | Script | What it does |
