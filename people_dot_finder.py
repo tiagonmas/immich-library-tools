@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 import unicodedata
 from difflib import SequenceMatcher
 
-from people_comma_finder import ImmichApiError, get_all_people
+from people_comma_finder import ImmichApiError, api_request, get_all_people
 
 SIMILARITY_THRESHOLD = 0.8
 
@@ -48,7 +49,15 @@ def find_similar_people(person: dict, people: list[dict]) -> list[tuple[dict, st
     return sorted(matches, key=lambda match: (-match[2], match[0]["name"].casefold()))
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="List people with periods in their names and suggest merges."
+    )
+    return parser.parse_args()
+
+
 def main() -> int:
+    parse_args()
     base_url = os.environ.get("IMMICH_BASE_URL", "").strip().rstrip("/")
     api_key = os.environ.get("IMMICH_API_KEY", "").strip()
     if not base_url or not api_key:

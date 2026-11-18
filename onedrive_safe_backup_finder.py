@@ -102,8 +102,17 @@ def parse_args() -> argparse.Namespace:
         "--no-confirm",
         action="store_true",
         help=(
-            "auto-delete when image content is verified identical; still ask if "
-            "image content differs or cannot be verified"
+            "auto-delete verified backup pairs and orphan XMP sidecars; still "
+            "ask if image content differs or cannot be verified, except DNGs "
+            "allowed with --deleteDNG"
+        ),
+    )
+    parser.add_argument(
+        "--deleteDNG",
+        action="store_true",
+        help=(
+            "allow DNG backup deletion even when RAW image content cannot be "
+            "verified; dry-run and confirmation settings still apply"
         ),
     )
     args = parser.parse_args()
@@ -126,9 +135,41 @@ def iter_files(folder: Path) -> list[Path]:
         directories.sort()
         for filename in sorted(filenames):
             path = Path(current) / filename
-            if path.is_file() and backup_name(path) is not None:
+            if (
+                path.is_file()
+                and path.suffix.casefold() != ".xmp"
+                and backup_name(path) is not None
+            ):
                 found.append(path)
     return found
+
+
+def backup_identity(path: Path) -> tuple[str, str, str] | None:
+    parsed = backup_name(path)
+    if parsed is None:
+        return None
+    return (str(path.parent).casefold(), parsed.prefix.casefold(), parsed.number)
+
+
+def iter_orphan_backup_xmps(folder: Path, backup_files: list[Path]) -> list[Path]:
+    """Find safeBackup-named XMP sidecars whose media backup is gone."""
+    existing_backup_identities = {
+        identity
+        for path in backup_files
+        if (identity := backup_identity(path)) is not None
+    }
+    orphans: list[Path] = []
+    for current, directories, filenames in os.walk(folder, followlinks=False):
+        directories.sort()
+        for filename in sorted(filenames):
+            sidecar = Path(current) / filename
+            if not sidecar.is_file() or sidecar.suffix.casefold() != ".xmp":
+                continue
+            media_name = sidecar.name[: -len(sidecar.suffix)]
+            identity = backup_identity(sidecar.parent / media_name)
+            if identity is not None and identity not in existing_backup_identities:
+                orphans.append(sidecar)
+    return orphans
 
 
 def original_candidates(backup: Path, search: str | None = None) -> list[Path]:
@@ -680,7 +721,7 @@ def print_xmp_comparisons(
 
 def process_backup(
     backup: Path, dry_run: bool, confirm: bool, show_metadata: bool,
-    search: str | None,
+    search: str | None, delete_dng: bool,
 ) -> tuple[bool, int]:
     print("\n" + "-" * 72)
     print(f"Safe backup: {backup}")
@@ -718,6 +759,13 @@ def process_backup(
     image_content_verified_same = (
         file_bytes_identical or comparison.image_content_identical is True
     )
+    is_dng = backup.suffix.casefold() == ".dng" or original.suffix.casefold() == ".dng"
+    dng_deletion_allowed = is_dng and delete_dng
+    if dng_deletion_allowed and not image_content_verified_same:
+        print(
+            "\tDNG deletion allowed by --deleteDNG; RAW image content "
+            "could not be verified."
+        )
     if (
         image_content_verified_same
         and (not file_bytes_identical or xmp_sidecars_differ)
@@ -730,16 +778,26 @@ def process_backup(
         print("\tDry run: would delete the safe backup and the listed backup XMP sidecar(s).")
         for path in files_to_delete:
             print(f"\t\tWould delete: {path.name}")
-        if not confirm and not image_content_verified_same:
+        if (
+            not confirm
+            and not image_content_verified_same
+            and not dng_deletion_allowed
+        ):
             print(
                 "\tImage content differs or could not be verified; live mode will still ask for confirmation."
             )
         return False, 0
 
     should_delete = True
-    must_confirm = confirm or not image_content_verified_same
+    must_confirm = confirm or (
+        not image_content_verified_same and not dng_deletion_allowed
+    )
     if must_confirm:
-        if not confirm and not image_content_verified_same:
+        if (
+            not confirm
+            and not image_content_verified_same
+            and not dng_deletion_allowed
+        ):
             print(
                 "\tImage content differs or could not be verified; confirmation is required even with --no-confirm."
             )
@@ -767,6 +825,30 @@ def process_backup(
     return backup_deleted, xmp_sidecars_deleted
 
 
+def process_orphan_xmp(sidecar: Path, dry_run: bool, confirm: bool) -> bool:
+    print("\n" + "-" * 72)
+    print(f"Orphan safeBackup XMP: {sidecar}")
+    print("\tNo corresponding safeBackup image remains.")
+    if dry_run:
+        print(f"\tDry run: would delete orphan XMP sidecar: {sidecar.name}")
+        return False
+    if confirm:
+        try:
+            answer = input("\tDelete this orphan XMP sidecar? [y/N] ").strip().casefold()
+        except EOFError:
+            answer = ""
+        if answer not in {"y", "yes"}:
+            print("\tKept the orphan XMP sidecar.")
+            return False
+    try:
+        sidecar.unlink()
+        print(f"\tDeleted orphan XMP sidecar: {sidecar.name}")
+        return True
+    except OSError as error:
+        print(f"\tCould not delete {sidecar.name}: {error}", file=sys.stderr)
+        return False
+
+
 def main() -> int:
     args = parse_args()
     folder = args.folder.expanduser().resolve()
@@ -784,9 +866,25 @@ def main() -> int:
     else:
         matching_backups = backups
     selected = matching_backups if args.top is None else matching_backups[: args.top]
+    orphan_xmps = iter_orphan_backup_xmps(folder, backups)
+    if args.search:
+        orphan_xmps = [
+            sidecar
+            for sidecar in orphan_xmps
+            if args.search.casefold() in sidecar.name.casefold()
+        ]
+    selected_orphan_xmps = (
+        orphan_xmps if args.top is None else orphan_xmps[: args.top]
+    )
     mode = "DRY RUN: no files will be deleted" if args.dry_run else "LIVE: matching backup files can be deleted"
     if not args.dry_run and args.no_confirm:
-        mode += "; identical/metadata-only files auto-confirmed, changed or unverified image content still prompts"
+        mode += "; verified identical files auto-confirmed"
+        if not args.deleteDNG:
+            mode += ", changed or unverified image content still prompts"
+        else:
+            mode += "; --deleteDNG also permits unverified DNGs"
+    if args.deleteDNG:
+        mode += "; DNG backups are allowed despite unverified RAW image content"
     print(f"Folder: {folder}")
     if args.search:
         print(f"Filename search: {args.search}")
@@ -796,6 +894,11 @@ def main() -> int:
         )
     else:
         print(f"Found {len(backups)} safeBackup files; processing {len(selected)}.")
+    if orphan_xmps:
+        print(
+            f"Found {len(orphan_xmps)} orphan safeBackup XMP sidecars; "
+            f"processing {len(selected_orphan_xmps)}."
+        )
     print(f"Mode: {mode}")
     if args.no_confirm and args.dry_run:
         print("Warning: --no-confirm has no effect in dry-run mode.")
@@ -809,12 +912,19 @@ def main() -> int:
             confirm=not args.no_confirm,
             show_metadata=args.show_metadata,
             search=args.search,
+            delete_dng=args.deleteDNG,
         )
         deleted_backups += backup_deleted
         deleted_xmp_sidecars += xmp_deleted
+    orphan_xmps_deleted = 0
+    for sidecar in selected_orphan_xmps:
+        if process_orphan_xmp(sidecar, args.dry_run, confirm=not args.no_confirm):
+            orphan_xmps_deleted += 1
+    deleted_xmp_sidecars += orphan_xmps_deleted
     total_deleted = deleted_backups + deleted_xmp_sidecars
     print(
-        f"Processed {len(selected)} safeBackup files; deleted {deleted_backups} "
+        f"Processed {len(selected)} safeBackup files and "
+        f"{len(selected_orphan_xmps)} orphan XMP sidecars; deleted {deleted_backups} "
         f"backup files and {deleted_xmp_sidecars} XMP sidecars "
         f"({total_deleted} files total)."
     )

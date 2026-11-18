@@ -17,10 +17,120 @@ local files and does not connect to Immich.
 | `people_dot_finder.py` | Finds people whose names contain a period, shows exact or likely similar names (80% similarity or higher), recommends the top match, and prompts before merging. A confirmed merge keeps the recommended person's record. |
 | `people_similar_name_finder.py` | Lists people and possible duplicate names. For pairs scoring above 90%, it asks whether to merge; a merge happens only after an affirmative answer. |
 | `image_folder_date_validator.py` | Finds images whose Immich timeline dates conflict with the year or date implied by their folder paths. |
-| `tags_similar_name_finder.py` | Lists similar tag names, automatically merges exact dot/space or first-letter capitalization variants, and asks before other replacements above 90%. |
+| `tags_similar_name_finder.py` | Lists similar tag names and merges selected variants in Immich and in matching file/XMP metadata, preserving a capitalized initial in the final tag path component. |
 | `videos_without_people.py` | Lists videos with no people tagged, including a link to open each video in Immich. |
 | `videos_without_people_web.py` | Runs a paginated web page with a thumbnail grid, hover video previews, durations, duration sorting (shortest first by default), and total count for videos that have no people tagged. It shows a loading indicator while counting. Each video link opens in a new tab. |
 | `onedrive_safe_backup_finder.py` | Finds OneDrive `safeBackup` copies, compares them with matching originals and XMP sidecars, optionally shows metadata differences, reports image-content differences, and can delete confirmed backup copies. |
+
+## Command-line options
+
+Scripts that use `argparse` support `-h` or `--help` to display their usage.
+The tables below list each script's command-line options. Immich-backed
+scripts also require `IMMICH_BASE_URL` and `IMMICH_API_KEY` in the environment.
+
+### `people_comma_finder.py`
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `--top N` | All images | Inspect at most N images total. |
+| `--list-people` | Off | List comma-named people and exit without searching images. |
+| `--include-person-id ID` | None | Also fetch a person by ID while using `--list-people`; repeatable. |
+| `--hide-people` | Off | With `--list-people`, hide comma-named people with zero associated assets. Cannot be combined with `--delete-people`. |
+| `--delete-people` | Off | With `--list-people`, delete identified comma-named people. Cannot be combined with `--hide-people`. |
+| `--tag-status` | `all` | Choose `yes`, `no`, or `all`: show images where all individual names are tagged, not all are tagged, or either. |
+| `--dry-run` / `--no-dry-run` | Dry run | Preview changes by default; `--no-dry-run` applies them. |
+| `--confirm` / `--no-confirm` | Confirm | Ask before each change by default; `--no-confirm` skips prompts. |
+
+`--include-person-id`, `--hide-people`, and `--delete-people` require
+`--list-people`.
+
+### `people_comma_list.py`
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| None | — | No script-specific command-line options; lists all comma-named people. |
+
+### `people_dot_finder.py`
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| None | — | No script-specific command-line options. Use `-h` or `--help` for usage. |
+
+### `people_similar_name_finder.py`
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `--threshold 0..1` | `0.8` | Minimum name similarity to report (for example, `0.9` is 90%). |
+| `--min-similarity PERCENT` | None | Show only people with a match at or above this percentage (0–100); implies `--only-matches`. |
+| `--only-matches` | Off | Hide people with no names meeting the similarity threshold. |
+
+Pairs above 90% may prompt for an interactive merge. Answer `n` to skip a
+pair and continue.
+
+### `tags_comma_list.py`
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `--sort-created-at` | API order | Sort matching tags by creation date; choose `asc` or `desc`. |
+| `--created-after DATE` | No date filter | Include tags created strictly after the ISO date or datetime; timezone-free values are UTC. |
+| `--top N` | All matching tags | List or process at most N tags after filtering and sorting. |
+| `--replace` | Off | Replace comma-named tag assignments on images with the individual comma-separated tags. |
+| `--dry-run` / `--no-dry-run` | Dry run | Preview changes by default; `--no-dry-run` applies changes and requires `--replace`. |
+| `--confirm` / `--no-confirm` | Confirm | Ask before each tag replacement in live mode; `--no-confirm` skips prompts. |
+
+### `tags_similar_name_finder.py`
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `--threshold PERCENT` | `80` | Minimum name similarity to report (0–100). |
+| `--include-unmatched` | Off | Also list tags with no similar names at the selected threshold. |
+| `--library-root PATH` | `IMMICH_LIBRARY_ROOT` or unset | Local library directory corresponding to Immich's `/external` path. |
+| `--ignore TEXT` | None | Skip local metadata edits for filenames containing this case-insensitive substring; repeatable. |
+
+There is no `--top` or dry-run option. Exact dot/space variants and
+case-only variants whose final name component differs by an initial capital
+can merge automatically. When a pair's final name component starts with a
+capital in one tag and lowercase in the other, the script does not offer a
+replacement that would change the capitalized initial to lowercase. Ignored
+files are still included in Immich's tag replacement.
+
+### `videos_without_people.py`
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| None | — | No script-specific command-line options; lists videos with no people tags. |
+
+### `videos_without_people_web.py`
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `--host ADDRESS` | `127.0.0.1` | Address for the web server to bind to. |
+| `--port PORT` | `8765` | Port for the web server. |
+| `--page-size N` | `20` | Videos per page (1–100). |
+| `--min-duration DURATION` | None | Include videos at least this long. Accepts seconds, `MM:SS`, or `HH:MM:SS`. |
+| `--max-duration DURATION` | None | Include videos no longer than this. Accepts seconds, `MM:SS`, or `HH:MM:SS`. |
+
+### `image_folder_date_validator.py`
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `--top N` | All results | List at most N mismatches, or N folders with `--listFolders`. |
+| `--ignore TEXT` | None | Skip filenames containing this case-insensitive substring; repeatable. |
+| `--ignoreFolder TEXT` | None | Skip folders whose path contains this case-insensitive text; repeatable. |
+| `--replace` | Off | Ask before updating a mismatched date in Immich. |
+| `--listFolders` | Off | List only folders with mismatched images, sorted by mismatch count descending. Cannot be combined with `--replace`. |
+
+### `onedrive_safe_backup_finder.py`
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `--folder PATH` | Current directory | Recursively scan this folder. |
+| `--search TEXT` | No filter | Only process safeBackup filenames containing this text; also use it to prefer a matching original. |
+| `--top N` | All matches | Process at most N safeBackup files. |
+| `--show-metadata` | Off | Show differences in metadata and XMP sidecars. |
+| `--dry-run` / `--no-dry-run` | Dry run | Report planned deletions by default; `--no-dry-run` enables deletion. |
+| `--no-confirm` | Confirm when needed | Skip prompts for verified duplicates or metadata-only differences; image-content differences normally still prompt. |
+| `--deleteDNG` | Off | Allow DNG backups to be deleted even though RAW image content cannot be verified; dry-run and confirmation behavior still apply. |
 
 The comma finder can modify Immich data when run with `--no-dry-run`; it removes
 the comma-named person's detected face entries from associated images. The dot
@@ -205,12 +315,16 @@ changed image and reports whether the original tag remains in Immich's asset
 tag associations. This API check cannot confirm whether the web detail panel
 also displays a matching tag imported from EXIF `TagList`/`Keywords` or an XMP
 sidecar; Immich reads tags from those metadata sources as well.
+Immich hierarchical tags are parent/child records; deleting a parent can remove
+its descendants too. During a live replacement run, the script refreshes the
+tag list after a not-found delete error, skips tags already removed with a
+parent, and continues with the remaining tags.
 
 ### Similar tag names
 
 ```sh
 # List tag names that are at least 80% similar to another tag name.
-# Exact dot/space and first-letter capitalization variants are merged
+# Exact dot/space and final-component initial-capital variants are merged
 # automatically. Other pairs scoring above 90% prompt before replacement.
 python3 tags_similar_name_finder.py
 
@@ -219,6 +333,12 @@ python3 tags_similar_name_finder.py --threshold 90
 
 # Include tags that have no similar names at the selected cutoff.
 python3 tags_similar_name_finder.py --include-unmatched
+
+# Map Immich's /external paths to the local media library for file and XMP updates.
+python3 tags_similar_name_finder.py --library-root /path/to/photo/library
+
+# Skip local edits for backup copies whose filenames contain "safeBackup".
+python3 tags_similar_name_finder.py --library-root /path/to/photo/library --ignore safeBackup
 ```
 
 The script loads every tag, following pagination when the API returns pages,
@@ -226,23 +346,47 @@ then lists each matching tag with its similar names and similarity scores.
 Comparisons ignore case, accents, and punctuation. Similarity scores are string
 comparisons, not calibrated probabilities. For pairs scoring above 90%, an
 exact dot/space variant such as `Ana.Monjardino` and `Ana Monjardino` is merged
-automatically into the undotted tag. A pair differing only in the first
+automatically into the undotted tag, unless doing so would replace a
+capitalized initial with a lowercase one. A pair differing only in the first
 letter's case, such as `joao` and `Joao`, is merged automatically into the
-capitalized tag. Any tag in a high-similarity pair with zero assets is deleted
+capitalized tag. For a path tag such as `_Pessoas/Tiago` and
+`_Pessoas/tiago`, the capitalized final component is kept. Other pairs in
+which the final component starts with different letter case do not offer a
+direction that replaces the capitalized tag with the lowercase one. Any tag
+in a high-similarity pair with zero assets is deleted
 automatically; if both have zero assets, both are deleted. Other
 dotted/undotted pairs ask whether to merge the dotted tag into the undotted
-one. Other pairs show two numbered directions; enter `0` or press Enter to
-skip. For these numbered choices, option 1 replaces the tag used by more
-assets; ties use alphabetical order. A confirmed or automatic merge adds the
+one. Other pairs show numbered directions; enter `0` or press Enter to
+skip. When both directions preserve capitalization, option 1 replaces the
+tag used by more assets; ties use alphabetical order. A confirmed or
+automatic merge adds the
 kept tag to every image and video using the replaced tag, then deletes the
-replaced tag. The script continues to the next pair after each merge or prompt.
-These changes require tag update, asset update, and tag delete permissions.
+replaced tag. It also uses ExifTool to replace the old tag with the kept tag in
+the affected original files and existing `.xmp` sidecars, checking the common
+XMP, IPTC, Lightroom, and digiKam tag fields. ExifTool must be installed, and
+the media files must be writable. Before each change, it prints the path of the
+file or sidecar being processed. If Immich returns paths such as
+`/external/Fotos/...` that are not accessible directly, set
+`IMMICH_LIBRARY_ROOT` or pass `--library-root` to the local directory mounted
+as `/external`; for example, `/external/Fotos/2005/image.jpg` maps to
+`/path/to/photo/library/Fotos/2005/image.jpg`. A merge is stopped if any
+affected original cannot be found or read. These changes require tag update,
+asset update, and tag delete permissions in Immich, plus local write access.
+Use repeatable `--ignore TEXT` options to skip local metadata edits for files
+whose filenames contain a case-insensitive substring; for example,
+`--ignore safeBackup` avoids trying to update OneDrive backup copies. Ignored
+files are still included in Immich's tag replacement.
+File metadata edits happen before the Immich tag merge, so an Immich API error
+afterward may leave the file metadata updated while the Immich tags remain as
+they were.
 Available options:
 
 | Option | Default | Behavior |
 | --- | --- | --- |
 | `--threshold PERCENT` | `80` | Minimum similarity percentage to report (0–100). |
 | `--include-unmatched` | Off | Also list tags with no similar names at the selected threshold. |
+| `--library-root PATH` | `IMMICH_LIBRARY_ROOT` or unset | Local library directory corresponding to Immich's `/external` path. |
+| `--ignore TEXT` | None | Skip local file and sidecar metadata edits when the filename contains TEXT; repeatable. |
 
 ### People with periods
 
@@ -307,9 +451,13 @@ merge. Similarity scores are name comparisons, not calibrated probabilities.
 
 ### Image dates and folder dates
 
-Compare each image's Immich timeline date with the date implied by its folder
-path. The script reads `fileCreatedAt` and `originalPath` from Immich and does
-not make changes.
+Compare each image's Immich timeline date with dates found in its folder path
+and filename. The script reads `fileCreatedAt`, `originalPath`, and the
+filename from Immich. By default it only reports mismatches. With `--replace`,
+it asks before updating an image's date in Immich. This API update changes
+Immich's stored timeline metadata; it does not edit the original file's EXIF
+metadata. It announces that it is scanning all Immich images, then displays a
+progress bar with the folder currently being checked.
 
 ```sh
 # List all images whose timeline dates disagree with their folders.
@@ -318,19 +466,42 @@ python3 image_folder_date_validator.py
 # List at most the first 20 mismatches.
 python3 image_folder_date_validator.py --top 20
 
+# List only folders that contain date-mismatched images.
+python3 image_folder_date_validator.py --listFolders
+
+# List at most 10 such folders; omit individual filenames.
+python3 image_folder_date_validator.py --listFolders --top 10
+
 # Ignore backup copies whose filenames contain "safeBackup".
 python3 image_folder_date_validator.py --ignore safeBackup
+
+# Ignore all folders whose names contain "SkyDrive".
+python3 image_folder_date_validator.py --ignoreFolder skydrive
+
+# Combine filename and folder filters; either filter can be repeated.
+python3 image_folder_date_validator.py --ignore safeBackup --ignoreFolder skydrive
+
+# Review each mismatch and choose whether to update its Immich date.
+python3 image_folder_date_validator.py --replace
 ```
 
 A folder named with just a year, such as `2005`, checks only the image year. A
-folder beginning with `YYYY.MM` or `YYYY.MM.DD` also provides a target date,
-using the first day when only a year and month are present. Images more than 60
-days from that target date are listed. Images without a valid Immich date are
-also listed when their folder provides a date. Folders without a recognizable
-year or date are skipped.
+folder or filename containing `YYYY.MM` or `YYYY.MM.DD` also provides a
+target date, using the first day when only a year and month are present. Images
+more than 60 days from a month or day target are listed. If the folder and
+filename suggest conflicting dates, `--replace` shows both options and lets
+you choose before asking to apply the update. Images without a valid Immich
+date are also listed when their folder or filename provides a date. Images
+without a recognizable date in either place are skipped.
 
 Use `--ignore TEXT` to skip filenames containing a case-insensitive substring;
-repeat the option to ignore multiple filename patterns.
+repeat the option to ignore multiple filename patterns. Use
+`--ignoreFolder TEXT` to skip images when any folder in their path contains the
+case-insensitive text; this option can also be repeated. For example,
+`--ignoreFolder skydrive` skips folders such as `SkyDrive camera roll`.
+`--listFolders` outputs only folders containing mismatched images, with a
+count per folder; `--top` limits the number of folders in this mode. It cannot
+be combined with `--replace`.
 
 ### OneDrive safeBackup files
 
@@ -338,7 +509,11 @@ Scan the current directory and its subdirectories for files with a
 `-safeBackup-####` suffix. The script pairs each backup with an existing
 same-folder original, compares metadata and XMP sidecars, and reports whether
 the file bytes or JPEG image stream differ. It leaves unmatched or ambiguous
-backups untouched. The default is a dry run.
+backups untouched. It also finds safeBackup XMP sidecars whose media backup has
+already been removed and offers to delete those orphan sidecars. The default
+is a dry run. Orphan XMP sidecars are confirmed individually by default;
+`--no-confirm` deletes them automatically in live mode. `--top` limits the
+number of media backups and orphan sidecars considered in each group.
 
 Run these commands from the repository directory. Replace
 `/path/to/your/photo-library` with the folder to scan.
@@ -361,6 +536,13 @@ python3 onedrive_safe_backup_finder.py --folder "/path/to/your/photo-library" --
 
 # Auto-delete metadata-only differences; still confirm image-content differences.
 python3 onedrive_safe_backup_finder.py --folder "/path/to/your/photo-library" --no-dry-run --no-confirm
+
+# Delete leftover safeBackup XMP sidecars when their backup image is gone.
+python3 onedrive_safe_backup_finder.py --folder "/path/to/your/photo-library" --no-dry-run
+
+# Allow DNG backups to be deleted even though RAW image content is not verified.
+# This keeps the normal confirmation prompt; add --no-confirm to bypass it.
+python3 onedrive_safe_backup_finder.py --folder "/path/to/your/photo-library" --no-dry-run --deleteDNG
 ```
 
 The script recognizes the `filename-hostname-safeBackup-0001.ext` form used by
@@ -370,13 +552,18 @@ limits the number of matching backup files processed. `--search TEXT` filters
 safeBackup filenames by a case-insensitive substring and prefers a unique
 candidate original containing that text. In live mode, `--no-confirm`
 skips prompts for exact duplicates or verified metadata-only changes. The
-script always asks before deleting when image content differs or cannot be
-verified, even with `--no-confirm`. Metadata differences are hidden unless
+script asks before deleting when image content differs or cannot be verified,
+even with `--no-confirm`, unless `--deleteDNG` explicitly allows an unverified
+DNG backup. Metadata differences are hidden unless
 `--show-metadata` is passed. ExifTool is required for metadata comparison. If
 `ffmpeg` is available, the script also reports first-frame pixel differences;
 without it, JPEG image streams are compared after omitting common metadata
 segments. At the end, it reports how many safeBackup files it processed and
-how many backup and XMP files it deleted.
+how many backup and XMP files it deleted, including orphan XMP sidecars.
+Use `--deleteDNG` to explicitly allow deletion of DNG backups even though the
+script cannot verify their RAW image content. Dry-run and confirmation behavior
+still apply; combine it with `--no-confirm` only if you want DNGs deleted
+without a prompt in live mode.
 
 ### Videos without people tags
 <img width="882" height="591" alt="image" src="https://github.com/user-attachments/assets/128db1e0-9deb-4626-8e47-1226f6fc84ae" />

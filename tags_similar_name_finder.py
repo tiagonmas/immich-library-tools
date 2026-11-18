@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 import unicodedata
 from difflib import SequenceMatcher
+from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
 from people_comma_finder import ImmichApiError, api_request
@@ -18,6 +22,13 @@ from tags_comma_list import PAGE_SIZE, get_all_tags, get_asset_page, tag_value
 DEFAULT_THRESHOLD = 0.8
 REPLACEMENT_PROMPT_THRESHOLD = 0.9
 WRITE_BATCH_SIZE = 100
+TAG_METADATA_FIELDS = (
+    "XMP-dc:Subject",
+    "XMP-lr:WeightedFlatSubject",
+    "XMP-lr:HierarchicalSubject",
+    "IPTC:Keywords",
+    "XMP-digiKam:TagsList",
+)
 
 
 def normalized_name(name: str) -> str:
@@ -62,14 +73,33 @@ def period_only_pair(left_name: str, right_name: str) -> tuple[str, str] | None:
 def capitalization_only_pair(
     left_name: str, right_name: str
 ) -> tuple[str, str] | None:
-    """Return lowercase source and initial-capital destination for case-only pairs."""
-    if not left_name or not right_name or left_name[1:] != right_name[1:]:
+    """Return lowercase source and capitalized destination for case-only pairs."""
+    if not left_name or not right_name or left_name.casefold() != right_name.casefold():
         return None
-    if left_name[0].islower() and left_name[0].upper() == right_name[0]:
+
+    return capitalization_direction(left_name, right_name)
+
+
+def capitalization_direction(
+    left_name: str, right_name: str
+) -> tuple[str, str] | None:
+    """Return the direction that does not lower the final component's initial."""
+    if not left_name or not right_name:
+        return None
+
+    left_initial = first_name_letter(left_name)
+    right_initial = first_name_letter(right_name)
+    if left_initial.islower() and left_initial.upper() == right_initial:
         return left_name, right_name
-    if right_name[0].islower() and right_name[0].upper() == left_name[0]:
+    if right_initial.islower() and right_initial.upper() == left_initial:
         return right_name, left_name
     return None
+
+
+def first_name_letter(name: str) -> str:
+    """Get the first alphabetic character in the final tag path component."""
+    final_component = name.rsplit("/", 1)[-1]
+    return next((character for character in final_component if character.isalpha()), "")
 
 
 def find_similar_tags(
@@ -136,18 +166,178 @@ def get_tag_assets(base_url: str, api_key: str, tag_id: str) -> list[dict]:
         time.sleep(0.05)
 
 
+def resolve_asset_path(asset: dict, library_root: Path | None) -> Path | None:
+    """Resolve an Immich originalPath to a local file, if it is accessible."""
+    original_path = asset.get("originalPath")
+    if not isinstance(original_path, str) or not original_path:
+        return None
+    direct = Path(original_path)
+    if direct.is_file():
+        return direct
+    if library_root is not None:
+        immich_path = PurePosixPath(original_path)
+        parts = immich_path.parts
+        if parts and parts[0] == "/" and len(parts) > 1 and parts[1] == "external":
+            mapped = library_root.joinpath(*parts[2:])
+        else:
+            mapped = library_root / original_path.lstrip("/")
+        if mapped.is_file():
+            return mapped
+    return None
+
+
+def associated_xmps(media_path: Path) -> list[Path]:
+    """Return the common XMP sidecar names used alongside a media file."""
+    candidates = (Path(f"{media_path}.xmp"), media_path.with_suffix(".xmp"))
+    return list(dict.fromkeys(path for path in candidates if path.is_file()))
+
+
+def metadata_replacements(
+    metadata: dict, source_name: str, destination_name: str
+) -> list[tuple[str, str, str | None]]:
+    """Find exact tag values to replace in known tag metadata fields."""
+    replacements: list[tuple[str, str, str | None]] = []
+    for field in TAG_METADATA_FIELDS:
+        value = metadata.get(field)
+        values = value if isinstance(value, list) else [value]
+        present_values = {entry for entry in values if isinstance(entry, str)}
+        for item in values:
+            if not isinstance(item, str):
+                continue
+            replacement = None
+            if item == source_name:
+                replacement = destination_name
+            elif field == "XMP-lr:HierarchicalSubject":
+                for separator in ("|", "/"):
+                    if separator in item and item.rsplit(separator, 1)[-1] == source_name:
+                        replacement = item.rsplit(separator, 1)[0] + separator + destination_name
+                        break
+            if replacement is not None:
+                replacements.append(
+                    (field, item, None if replacement in present_values else replacement)
+                )
+    return replacements
+
+
+def read_exiftool_metadata(path: Path) -> dict:
+    result = subprocess.run(
+        ["exiftool", "-json", "-G1", "-a", "-struct", "-s", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"ExifTool could not read {path}")
+    try:
+        records = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError) as error:
+        raise RuntimeError(f"ExifTool returned invalid metadata for {path}: {error}") from error
+    if not records or not isinstance(records[0], dict):
+        raise RuntimeError(f"ExifTool returned no metadata for {path}")
+    return records[0]
+
+
+def update_file_tag_metadata(
+    assets: list[dict],
+    source_name: str,
+    destination_name: str,
+    library_root: Path | None,
+    ignore_patterns: list[str],
+) -> tuple[int, int]:
+    """Replace source tag values in each affected original and its XMP sidecars."""
+    if shutil.which("exiftool") is None:
+        raise RuntimeError("ExifTool is required to update file metadata; install exiftool first")
+
+    file_updates: list[tuple[Path, list[tuple[str, str, str | None]]]] = []
+    seen_paths: set[Path] = set()
+    for asset in assets:
+        original_path = asset.get("originalPath")
+        original_name = asset.get("originalFileName")
+        if not isinstance(original_name, str) or not original_name:
+            original_name = Path(original_path).name if isinstance(original_path, str) else ""
+        ignored_pattern = next(
+            (
+                pattern
+                for pattern in ignore_patterns
+                if pattern.casefold() in original_name.casefold()
+            ),
+            None,
+        )
+        if ignored_pattern is not None:
+            print(
+                f"\tSkipping file metadata for {original_name!r}: filename "
+                f"contains ignored text {ignored_pattern!r}."
+            )
+            continue
+
+        media_path = resolve_asset_path(asset, library_root)
+        if media_path is None:
+            shown_path = asset.get("originalPath") or asset.get("originalFileName") or asset.get("id")
+            raise RuntimeError(
+                f"Cannot access original file {shown_path!r}. Set IMMICH_LIBRARY_ROOT "
+                "or pass --library-root to map Immich's /external path to the local library."
+            )
+        candidates = [media_path, *associated_xmps(media_path)]
+        for path in candidates:
+            resolved = path.resolve()
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            metadata = read_exiftool_metadata(path)
+            replacements = metadata_replacements(metadata, source_name, destination_name)
+            if replacements:
+                if not os.access(path, os.W_OK):
+                    raise RuntimeError(f"Cannot write metadata to {path}")
+                file_updates.append((path, replacements))
+
+    updated_files = 0
+    updated_values = 0
+    for path, replacements in file_updates:
+        args = ["exiftool", "-overwrite_original", "-P"]
+        for field, old_value, new_value in replacements:
+            args.append(f"-{field}-={old_value}")
+            if new_value is not None:
+                args.append(f"-{field}+={new_value}")
+        args.append(str(path))
+        print(f"\tUpdating file metadata: {path}")
+        result = subprocess.run(args, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ExifTool failed to update {path}: "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
+        updated_files += 1
+        updated_values += len(replacements)
+        print(f"\tUpdated file metadata: {path}")
+    return updated_files, updated_values
+
+
 def merge_tag_into(
     base_url: str,
     api_key: str,
     source_tag: dict,
     destination_tag: dict,
     source_assets: list[dict],
+    library_root: Path | None,
+    ignore_patterns: list[str],
 ) -> None:
-    """Assign the destination tag to source assets, then delete the source tag."""
+    """Update source metadata, assign the destination tag, then delete the source tag."""
     source_id = source_tag.get("id")
     destination_id = destination_tag.get("id")
     if not isinstance(source_id, str) or not isinstance(destination_id, str):
         raise ImmichApiError("Cannot merge tags without valid tag IDs")
+
+    updated_files, updated_values = update_file_tag_metadata(
+        source_assets,
+        tag_value(source_tag),
+        tag_value(destination_tag),
+        library_root,
+        ignore_patterns,
+    )
+    print(
+        f"\tUpdated source tag metadata in {updated_files} files/sidecars "
+        f"({updated_values} values)."
+    )
 
     asset_ids = [asset["id"] for asset in source_assets]
     for start in range(0, len(asset_ids), WRITE_BATCH_SIZE):
@@ -177,6 +367,8 @@ def prompt_for_replacement(
     right: dict,
     score: float,
     asset_cache: dict[str, list[dict]],
+    library_root: Path | None,
+    ignore_patterns: list[str],
 ) -> set[str] | None:
     left_id = left.get("id")
     right_id = right.get("id")
@@ -234,9 +426,16 @@ def prompt_for_replacement(
     capitalization_pair = capitalization_only_pair(left_name, right_name)
 
     if exact_period_pair:
-        source_tag, destination_tag = (
-            (left, right) if left_has_period else (right, left)
-        )
+        case_safe_direction = capitalization_direction(left_name, right_name)
+        if case_safe_direction:
+            source_name, destination_name = case_safe_direction
+            source_tag, destination_tag = (
+                (left, right) if tag_value(left) == source_name else (right, left)
+            )
+        else:
+            source_tag, destination_tag = (
+                (left, right) if left_has_period else (right, left)
+            )
         print(
             f"\tExact period variant; automatically merging "
             f"{tag_value(source_tag)!r} into {tag_value(destination_tag)!r}."
@@ -253,24 +452,42 @@ def prompt_for_replacement(
             f"{source_name!r} into {destination_name!r}."
         )
     elif left_has_period != right_has_period:
-        source_tag, destination_tag = (
-            (left, right) if left_has_period else (right, left)
-        )
+        case_safe_direction = capitalization_direction(left_name, right_name)
+        if case_safe_direction:
+            source_name, destination_name = case_safe_direction
+            source_tag, destination_tag = (
+                (left, right) if tag_value(left) == source_name else (right, left)
+            )
+        else:
+            source_tag, destination_tag = (
+                (left, right) if left_has_period else (right, left)
+            )
         source_id = source_tag["id"]
         destination_id = destination_tag["id"]
+        source_is_dotted = "." in tag_value(source_tag)
+        source_kind = "Dotted" if source_is_dotted else "Undotted"
+        destination_kind = "Undotted" if source_is_dotted else "Dotted"
         print(
-            f"\tDotted tag {tag_value(source_tag)!r}: "
+            f"\t{source_kind} tag {tag_value(source_tag)!r}: "
             f"{len(asset_cache[source_id])} assets."
         )
         print(
-            f"\tUndotted tag {tag_value(destination_tag)!r}: "
+            f"\t{destination_kind} tag {tag_value(destination_tag)!r}: "
             f"{len(asset_cache[destination_id])} assets."
         )
         try:
-            answer = input(
-                f"\tMerge the dotted tag into {tag_value(destination_tag)!r}, "
-                "removing the period? [y/N] "
-            ).strip().casefold()
+            if source_is_dotted:
+                prompt = (
+                    f"\tMerge the dotted tag into {tag_value(destination_tag)!r}, "
+                    "removing the period? [y/N] "
+                )
+            else:
+                prompt = (
+                    f"\tMerge {tag_value(source_tag)!r} into "
+                    f"{tag_value(destination_tag)!r} to preserve the capitalized "
+                    "initial? [y/N] "
+                )
+            answer = input(prompt).strip().casefold()
         except EOFError:
             answer = ""
         if answer not in {"y", "yes"}:
@@ -283,28 +500,41 @@ def prompt_for_replacement(
         else:
             first_source, first_destination = right, left
             second_source, second_destination = left, right
-        print(
-            f"\t1. Replace {tag_value(first_source)!r} with "
-            f"{tag_value(first_destination)!r} "
-            f"({len(asset_cache[first_source['id']])} assets; "
-            f"keep {tag_value(first_destination)!r})."
-        )
-        print(
-            f"\t2. Replace {tag_value(second_source)!r} with "
-            f"{tag_value(second_destination)!r} "
-            f"({len(asset_cache[second_source['id']])} assets; "
-            f"keep {tag_value(second_destination)!r})."
-        )
+        left_initial = first_name_letter(left_name)
+        right_initial = first_name_letter(right_name)
+        if left_initial.isupper() and right_initial.islower():
+            replacement_options = [(right, left)]
+        elif right_initial.isupper() and left_initial.islower():
+            replacement_options = [(left, right)]
+        else:
+            replacement_options = [
+                (first_source, first_destination),
+                (second_source, second_destination),
+            ]
+        for option_number, (option_source, option_destination) in enumerate(
+            replacement_options, start=1
+        ):
+            print(
+                f"\t{option_number}. Replace {tag_value(option_source)!r} with "
+                f"{tag_value(option_destination)!r} "
+                f"({len(asset_cache[option_source['id']])} assets; "
+                f"keep {tag_value(option_destination)!r})."
+            )
         print("\t0. Skip this pair.")
         try:
-            choice = input("\tChoose 0, 1, or 2: ").strip()
+            choice = input(
+                f"\tChoose 0 or 1{', or 2' if len(replacement_options) > 1 else ''}: "
+            ).strip()
         except EOFError:
             choice = "0"
 
         if choice == "1":
-            source_tag, destination_tag = first_source, first_destination
+            source_tag, destination_tag = replacement_options[0]
         elif choice == "2":
-            source_tag, destination_tag = second_source, second_destination
+            if len(replacement_options) < 2:
+                print("\tSkipped; no changes made for this pair.")
+                return None
+            source_tag, destination_tag = replacement_options[1]
         else:
             print("\tSkipped; no changes made for this pair.")
             return None
@@ -312,8 +542,16 @@ def prompt_for_replacement(
     source_id = source_tag["id"]
     source_assets = asset_cache[source_id]
     try:
-        merge_tag_into(base_url, api_key, source_tag, destination_tag, source_assets)
-    except ImmichApiError as error:
+        merge_tag_into(
+            base_url,
+            api_key,
+            source_tag,
+            destination_tag,
+            source_assets,
+            library_root,
+            ignore_patterns,
+        )
+    except (ImmichApiError, RuntimeError) as error:
         print(f"\tCould not complete tag replacement: {error}")
         return None
 
@@ -344,6 +582,28 @@ def parse_args() -> argparse.Namespace:
         "--include-unmatched",
         action="store_true",
         help="also list tags that have no similar names at the chosen threshold",
+    )
+    parser.add_argument(
+        "--library-root",
+        type=Path,
+        default=Path(os.environ["IMMICH_LIBRARY_ROOT"])
+        if os.environ.get("IMMICH_LIBRARY_ROOT")
+        else None,
+        metavar="PATH",
+        help=(
+            "local root mapped to Immich's /external path when originalPath is not "
+            "directly accessible (or set IMMICH_LIBRARY_ROOT)"
+        ),
+    )
+    parser.add_argument(
+        "--ignore",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help=(
+            "skip local metadata edits for files whose filename contains TEXT; "
+            "can be passed multiple times"
+        ),
     )
     args = parser.parse_args()
     if not 0 <= args.threshold <= 100:
@@ -425,7 +685,14 @@ def main() -> int:
             )
             continue
         merged_ids = prompt_for_replacement(
-            base_url, api_key, left, right, score, asset_cache
+            base_url,
+            api_key,
+            left,
+            right,
+            score,
+            asset_cache,
+            args.library_root,
+            args.ignore,
         )
         if merged_ids:
             merged_tag_ids.update(merged_ids)

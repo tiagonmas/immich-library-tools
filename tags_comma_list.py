@@ -511,6 +511,9 @@ def main() -> int:
         f"Found {total_matching_tags} tags with a comma in their name; "
         f"processing {len(matching_tags)} (out of {len(tags)} tags loaded)."
     )
+    live_tag_ids = {
+        tag.get("id") for tag in tags if isinstance(tag.get("id"), str)
+    }
     if args.replace:
         mode = (
             "DRY RUN: no changes will be applied"
@@ -527,6 +530,13 @@ def main() -> int:
         )
 
     for tag_index, tag in enumerate(matching_tags):
+        tag_id = tag.get("id")
+        if not isinstance(tag_id, str) or tag_id not in live_tag_ids:
+            print(
+                f"Skipping {tag_value(tag)!r}: it was already removed from Immich, "
+                "possibly when a hierarchical parent tag was deleted."
+            )
+            continue
         if tag_index:
             print("------------------------")
         name = tag_value(tag)
@@ -545,6 +555,26 @@ def main() -> int:
                     confirm=args.confirm,
                 )
             except ImmichApiError as error:
+                try:
+                    tags = get_all_tags(base_url, api_key)
+                except ImmichApiError as refresh_error:
+                    print(f"\tError: {error}", file=sys.stderr)
+                    print(
+                        f"Could not refresh Immich tags after the error: {refresh_error}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                live_tag_ids = {
+                    existing_tag.get("id")
+                    for existing_tag in tags
+                    if isinstance(existing_tag.get("id"), str)
+                }
+                if tag_id not in live_tag_ids:
+                    print(
+                        f"\tTag {name!r} no longer exists in Immich; it was likely "
+                        "removed with a hierarchical parent. Continuing."
+                    )
+                    continue
                 print(f"\tError: {error}", file=sys.stderr)
                 return 1
     return 0
