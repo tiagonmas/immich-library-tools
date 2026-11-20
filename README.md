@@ -13,6 +13,7 @@ local files and does not connect to Immich.
 - [people_comma_list.py](#people-with-commas)
 - [people_dot_finder.py](#people-with-periods)
 - [people_similar_name_finder.py](#similar-people-names)
+- [repair_videos.py](#repairing-video-files)
 - [tags_comma_list.py](#tags-with-commas)
 - [tags_similar_name_finder.py](#similar-tag-names)
 - [videos_without_people.py](#videos-without-people-tags)
@@ -29,6 +30,7 @@ local files and does not connect to Immich.
 | `tags_comma_list.py` | Lists comma-named tags and can replace those tag assignments on images with separate tags. |
 | `people_dot_finder.py` | Finds people whose names contain a period, shows exact or likely similar names (80% similarity or higher), recommends the top match, and prompts before merging. A confirmed merge keeps the recommended person's record. |
 | `people_similar_name_finder.py` | Lists people and possible duplicate names. For pairs scoring above 90%, it asks whether to merge; a merge happens only after an affirmative answer. |
+| `repair_videos.py` | Recursively checks videos with `ffprobe` and `ffmpeg`, reports decode errors, and can rebuild damaged files or create WhatsApp-profile MP4s. |
 | `image_folder_date_validator.py` | Finds images whose Immich timeline dates conflict with the year or date implied by their folder paths. |
 | `tags_similar_name_finder.py` | Lists similar tag names and merges selected variants in Immich and in matching file/XMP metadata, preserving a capitalized initial in the final tag path component. |
 | `videos_without_people.py` | Lists videos with no people tagged, including a link to open each video in Immich. |
@@ -79,6 +81,28 @@ scripts also require `IMMICH_BASE_URL` and `IMMICH_API_KEY` in the environment.
 
 Pairs above 90% may prompt for an interactive merge. Answer `n` to skip a
 pair and continue.
+
+### `repair_videos.py`
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `--folder PATH` | Current directory | Recursively scan this folder for video files. |
+| `--top N` | All files | Inspect at most N video files. |
+| `--compatible` | Off | Also check for MP4 with H.264/yuv420p video and AAC or no audio. Remux by stream copy when possible; otherwise re-encode. |
+| `--dry-run` / `--no-dry-run` | Dry run | Report findings and planned actions by default; `--no-dry-run` performs repairs. |
+| `--confirm` / `--no-confirm` | Confirm | In live mode, ask before each change; `--no-confirm` skips prompts. Answer `a` to approve this and all remaining files. |
+
+Requires `ffmpeg` and `ffprobe` on `PATH`. Without `--compatible`, files with
+probe or decode errors are rebuilt in place, retaining the original filename
+and container. With `--compatible`, non-MP4 files are written as a same-stem
+`.mp4`, then the original is deleted after the new output validates. Existing
+output files block conversion. The script warns before this destructive action.
+Embedded metadata, chapters, file permissions and timestamps are carried over;
+Immich XMP sidecars are migrated or preserved. MP4 files outside the compatibility
+profile, including files whose video starts more than one second after audio,
+are re-encoded in place after validation. For that timestamp issue, the video
+start is aligned with the audio start. WhatsApp size and resolution limits are
+not checked.
 
 ### `tags_comma_list.py`
 
@@ -577,6 +601,26 @@ Use `--deleteDNG` to explicitly allow deletion of DNG backups even though the
 script cannot verify their RAW image content. Dry-run and confirmation behavior
 still apply; combine it with `--no-confirm` only if you want DNGs deleted
 without a prompt in live mode.
+
+### Repairing video files
+
+Inspect videos recursively under the current directory (dry-run is the default):
+
+```sh
+python3 repair_videos.py
+```
+
+Preview compatibility conversions for at most 10 files:
+
+```sh
+python3 repair_videos.py --compatible --top 10
+```
+
+Perform confirmed repairs or compatibility conversions:
+
+```sh
+python3 repair_videos.py --compatible --no-dry-run
+```
 
 ### Videos without people tags
 <img width="882" height="591" alt="image" src="https://github.com/user-attachments/assets/128db1e0-9deb-4626-8e47-1226f6fc84ae" />
